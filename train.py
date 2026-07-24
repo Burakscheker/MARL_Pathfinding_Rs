@@ -4,6 +4,7 @@ Asama 3:  .venv\\Scripts\\python.exe train.py --algo dqn
 """
 import argparse
 import csv
+import json
 import os
 import sys
 import time
@@ -19,13 +20,16 @@ if sys.stdout.encoding and sys.stdout.encoding.lower() != "utf-8":
     sys.stderr.reconfigure(encoding="utf-8")
 
 from agents.dqn import DQNAgent
-from config import (AGENT_1, AGENT_2, DIFFICULTY_CSV, DQN_EPISODES,
-                    DQN_EVAL_EVERY, IQL_BATCH, IQL_BUFFER, IQL_EPISODES,
-                    IQL_EPS_DECAY_STEPS, IQL_EVAL_EVERY, IQL_LEARN_START,
-                    IQL_LR, IQL_TARGET_UPDATE, RUNS_DIR, SEED)
+from agents.vdn import VDNAgent
+from config import (AGENT_1, AGENT_2, DEMO_EPISODES, DEMO_SEED,
+                    DIFFICULTY_CSV, DQN_EPISODES, DQN_EVAL_EVERY, IQL_BATCH,
+                    IQL_BUFFER, IQL_EPISODES, IQL_EPS_DECAY_STEPS,
+                    IQL_EVAL_EVERY, IQL_LEARN_START, IQL_LR,
+                    IQL_TARGET_UPDATE, RUNS_DIR, SEED, TRAIN_HARM_LOG_EVERY,
+                    TRAIN_HARM_WINDOW, VDN_EVAL_EVERY, VDN_EPISODES)
 from env.grid_env import MARLGridEnv
 from env.single_agent import SingleAgentEnv, all_start_goal_pairs
-from env.two_agent import play_episode
+from env.two_agent import play_episode, play_episode_vdn
 
 
 # --------------------------------------------------------------------- eval
@@ -213,12 +217,18 @@ def _make_iql_agent(seed: int) -> DQNAgent:
 
 def train_iql(episodes: int = IQL_EPISODES, seed: int = SEED,
               eval_every: int = IQL_EVAL_EVERY,
-              quick_eval_n: int = 1_500) -> dict:
+              quick_eval_n: int = 1_500, tag: str = "iql") -> dict:
     """Iki bagimsiz DQN, ortak odul YOK. PLAN §Asama 4.
 
     grid_env.py'deki info["r_ind"] zaten sadece step-cost + kendi hedef
     bonusunu iceriyor; kilitleme/takim/optimallik cezalari (r_team'e ait)
     hic karismiyor — bu IQL'in "ortak odul yok" tanimini otomatik saglar.
+
+    tag: cikti dosyalarinin onekini belirler (runs/ckpt/{tag}_agent*.pt,
+    runs/{tag}_train_log.csv, runs/{tag}_train_harm.csv). Varsayilan "iql"
+    Asama 4'un kanonik 40.000-episode kosusuyla ayni dosyalari kullanir —
+    farkli episode sayisiyla ayri bir kosu yapacaksan (orn. gosterim/rapor
+    icin) FARKLI bir tag ver, yoksa belgelenmis sonuclarin uzerine yazilir.
     """
     env = MARLGridEnv(seed=seed)
     agents = {AGENT_1: _make_iql_agent(seed), AGENT_2: _make_iql_agent(seed + 1)}
@@ -230,7 +240,7 @@ def train_iql(episodes: int = IQL_EPISODES, seed: int = SEED,
     quick_difficulty = [all_difficulty[i] for i in quick_idx]
 
     os.makedirs(f"{RUNS_DIR}/ckpt", exist_ok=True)
-    log_path = f"{RUNS_DIR}/iql_train_log.csv"
+    log_path = f"{RUNS_DIR}/{tag}_train_log.csv"
     log_file = open(log_path, "w", newline="", encoding="utf-8")
     logger = csv.DictWriter(log_file, fieldnames=[
         "episode", "steps1", "steps2", "eps1", "eps2", "eval_gap1_bad",
@@ -238,9 +248,35 @@ def train_iql(episodes: int = IQL_EPISODES, seed: int = SEED,
         "eval_harm_rate", "eval_hard_harm_rate"])
     logger.writeheader()
 
+    # Egitim SIRASINDAKI (epsilon-greedy) zarar orani — yogun hareketli
+    # ortalama. DIKKAT: bu politikanin GERCEK kalitesini degil, epsilon +
+    # politika karisimini olcer; epsilon dustukce "iyilesiyormus gibi"
+    # gorunebilir sadece rastgele hamle azaldigi icin. Politikanin GERCEK
+    # zarar orani logger'daki eval_harm_rate'tir (eps=0, tam/orneklem tarama).
+    harm_path = f"{RUNS_DIR}/{tag}_train_harm.csv"
+    harm_file = open(harm_path, "w", newline="", encoding="utf-8")
+    harm_logger = csv.DictWriter(harm_file, fieldnames=[
+        "episode", "train_harm_rate", "train_harm_rate_hard", "n_hard_in_window"])
+    harm_logger.writeheader()
+    harm_w = deque(maxlen=TRAIN_HARM_WINDOW)
+    hard_harm_w = deque(maxlen=TRAIN_HARM_WINDOW)
+
     t0 = time.time()
     for ep in range(1, episodes + 1):
-        play_episode(env, agents, train=True)
+        info, _ = play_episode(env, agents, train=True)
+        harm_w.append(bool(info.get("harmed")))
+        if info.get("is_hard"):
+            hard_harm_w.append(bool(info.get("harmed")))
+
+        if ep % TRAIN_HARM_LOG_EVERY == 0:
+            harm_logger.writerow({
+                "episode": ep,
+                "train_harm_rate": round(float(np.mean(harm_w)), 4),
+                "train_harm_rate_hard": (round(float(np.mean(hard_harm_w)), 4)
+                                        if hard_harm_w else ""),
+                "n_hard_in_window": len(hard_harm_w),
+            })
+            harm_file.flush()
 
         if ep % eval_every == 0 or ep == episodes:
             ev = evaluate_iql(agents, env, quick_configs, quick_difficulty)
@@ -265,9 +301,10 @@ def train_iql(episodes: int = IQL_EPISODES, seed: int = SEED,
                   f"  zarar(zor) %{100*ev['hard_harm_rate']:.2f}", flush=True)
 
     log_file.close()
-    agents[AGENT_1].save(f"{RUNS_DIR}/ckpt/iql_agent1.pt")
-    agents[AGENT_2].save(f"{RUNS_DIR}/ckpt/iql_agent2.pt")
-    print(f"\nEgitim bitti: {time.time()-t0:.0f}s -> runs/ckpt/iql_agent{{1,2}}.pt")
+    harm_file.close()
+    agents[AGENT_1].save(f"{RUNS_DIR}/ckpt/{tag}_agent1.pt")
+    agents[AGENT_2].save(f"{RUNS_DIR}/ckpt/{tag}_agent2.pt")
+    print(f"\nEgitim bitti: {time.time()-t0:.0f}s -> runs/ckpt/{tag}_agent{{1,2}}.pt")
 
     print("\n=== ASAMA 4 KABUL KRITERI (TAM 14.400 konfig) ===")
     ev = evaluate_iql(agents, env, all_configs, all_difficulty)
@@ -282,18 +319,243 @@ def train_iql(episodes: int = IQL_EPISODES, seed: int = SEED,
     return {"agents": agents, "eval": ev}
 
 
+def _record_demo_episodes(episode_fn, n: int, tag: str) -> list[dict]:
+    """episode_fn() -> terminal info dict'i uretir (her cagrida env sifirlanmis
+    olmali, "forbidden" alani DAHIL). Ortak govde: IQL ve VDN'in demo-kayit
+    fonksiyonlari sadece episode_fn'i farkli kurar (play_episode vs
+    play_episode_vdn, iki-ajan-dict vs tek-paylasilan-ajan)."""
+    episodes = []
+    for i in range(n):
+        info = episode_fn()
+        s1, s2, goal = info["config"]
+        episodes.append({
+            "idx": i, "s1": s1, "s2": s2, "goal": goal,
+            "path1": info["path1"], "path2": info["path2"],
+            "forbidden": info["forbidden"],
+            "success": info["success"], "blocked": info["blocked"],
+            "detoured": info["detoured"], "harmed": info["harmed"],
+            "len1": info["len1"], "len2": info["len2"],
+            "oracle_len1": info["oracle_len1"], "oracle_len2": info["oracle_len2"],
+            "free_len2": info["free_len2"], "is_hard": info["is_hard"],
+        })
+
+    out_path = f"{RUNS_DIR}/{tag}_demo_episodes.json"
+    with open(out_path, "w", encoding="utf-8") as f:
+        json.dump(episodes, f, ensure_ascii=False, indent=2)
+    n_harmed = sum(e["harmed"] for e in episodes)
+    print(f"\n{n} deterministik gosterim episode'u -> {out_path}"
+          f"  ({n_harmed}/{n} zarar gordu)")
+    return episodes
+
+
+def record_demo_episodes(agents: dict, n: int = DEMO_EPISODES, seed: int = DEMO_SEED,
+                         tag: str = "iql") -> list[dict]:
+    """Egitim SONRASI, epsilon=0 (tam deterministik, rastgele hamle YOK) N episode
+    oynatir; her birinin tam yol/harita verisini JSON'a yazar (viz/plot_iql_report.py
+    bunu okuyup harita cizer).
+
+    Ayri bir MARLGridEnv kullanir: egitimin kendi rng akisina dokunmaz, ve
+    DEMO_SEED sabit oldugu icin gosterim konfigleri egitim uzunlugundan
+    bagimsiz olarak HER ZAMAN aynidir — kosular arasi karsilastirilabilir.
+    """
+    demo_env = MARLGridEnv(seed=seed)
+
+    def one():
+        info, _ = play_episode(demo_env, agents, train=False)
+        return {**info, "forbidden": sorted(demo_env.forbidden)}
+
+    return _record_demo_episodes(one, n=n, tag=tag)
+
+
+def record_demo_episodes_vdn(agent: VDNAgent, n: int = DEMO_EPISODES,
+                             seed: int = DEMO_SEED, tag: str = "vdn") -> list[dict]:
+    """record_demo_episodes ile ayni sozlesme, tek paylasilan VDNAgent icin."""
+    demo_env = MARLGridEnv(seed=seed)
+
+    def one():
+        info, _ = play_episode_vdn(demo_env, agent, train=False)
+        return {**info, "forbidden": sorted(demo_env.forbidden)}
+
+    return _record_demo_episodes(one, n=n, tag=tag)
+
+
+# ==================================================================== VDN
+
+def evaluate_vdn(agent: VDNAgent, env: MARLGridEnv, configs: list,
+                 difficulty: list | None = None) -> dict:
+    """evaluate_iql ile ayni sozlesme/metrikler, tek paylasilan ajan icin."""
+    n = len(configs)
+    reached1 = reached2 = blocked = detoured = harmed = gap1_bad = 0
+    gap2_sum = 0.0
+    hard_harmed = hard_n = 0
+
+    for i, cfg in enumerate(configs):
+        info, _ = play_episode_vdn(env, agent, train=False, config=cfg)
+        if info["gap1"] is not None:
+            reached1 += 1
+            gap1_bad += info["gap1"] != 0
+        if info["gap2"] is not None:
+            reached2 += 1
+            gap2_sum += info["gap2"]
+        blocked += info["blocked"]
+        detoured += bool(info.get("detoured"))
+        harmed += bool(info.get("harmed"))
+        if difficulty is not None and difficulty[i] == "hard":
+            hard_n += 1
+            hard_harmed += bool(info.get("harmed"))
+
+    return {
+        "n": n,
+        "reached1_frac": reached1 / n,
+        "reached2_frac": reached2 / n,
+        "gap1_bad": gap1_bad,
+        "mean_gap2": gap2_sum / max(reached2, 1),
+        "block_rate": blocked / n,
+        "detour_rate": detoured / n,
+        "harm_rate": harmed / n,
+        "hard_harm_rate": (hard_harmed / hard_n) if hard_n else float("nan"),
+        "hard_n": hard_n,
+    }
+
+
+def train_vdn(episodes: int = VDN_EPISODES, seed: int = SEED,
+             eval_every: int = VDN_EVAL_EVERY,
+             quick_eval_n: int = 1_500, tag: str = "vdn") -> dict:
+    """Paylasilan TEK Q-agi, golge NOOP ile baglanmis TEK TD hatasi. PLAN §Asama 5.
+
+    IQL'den (train_iql) TEK mimari fark play_episode_vdn'de: HER t'de HER IKI
+    ajanin (obs,aksiyon) cifti ayni joint transition'a yaziliyor, boylece
+    A1'in "kilitleme" hatasi artik A1'in gradyanina ULASIYOR — IQL'de
+    ulasmiyordu (agents/dqn.py'nin push()'u pasif ajan icin hic cagrilmiyordu).
+    """
+    env = MARLGridEnv(seed=seed)
+    agent = VDNAgent(seed=seed)
+
+    all_configs, all_difficulty = load_all_configs()
+    rng = np.random.default_rng(seed + 999)
+    quick_idx = rng.choice(len(all_configs), size=quick_eval_n, replace=False)
+    quick_configs = [all_configs[i] for i in quick_idx]
+    quick_difficulty = [all_difficulty[i] for i in quick_idx]
+
+    os.makedirs(f"{RUNS_DIR}/ckpt", exist_ok=True)
+    log_path = f"{RUNS_DIR}/{tag}_train_log.csv"
+    log_file = open(log_path, "w", newline="", encoding="utf-8")
+    logger = csv.DictWriter(log_file, fieldnames=[
+        "episode", "steps", "eps", "eval_gap1_bad", "eval_mean_gap2",
+        "eval_block_rate", "eval_detour_rate", "eval_harm_rate",
+        "eval_hard_harm_rate"])
+    logger.writeheader()
+
+    harm_path = f"{RUNS_DIR}/{tag}_train_harm.csv"
+    harm_file = open(harm_path, "w", newline="", encoding="utf-8")
+    harm_logger = csv.DictWriter(harm_file, fieldnames=[
+        "episode", "train_harm_rate", "train_harm_rate_hard", "n_hard_in_window"])
+    harm_logger.writeheader()
+    harm_w = deque(maxlen=TRAIN_HARM_WINDOW)
+    hard_harm_w = deque(maxlen=TRAIN_HARM_WINDOW)
+
+    health_checked = False  # PLAN §Asama 5 saglik kontrolu, bkz. asagida
+
+    t0 = time.time()
+    for ep in range(1, episodes + 1):
+        # d(s1,g)=1 olan konfigler (%13.3) FAZ A'yi TEK adimda bitirir — o
+        # episode'u yakalarsak 1 olcumle "SABIT" diye yanlis alarm veririz.
+        # ep>=200'den itibaren en az 3 olcum toplayan ILK episode'u kullan.
+        probe = [] if (not health_checked and ep >= 200) else None
+        info, _ = play_episode_vdn(env, agent, train=True, health_probe=probe)
+
+        if probe is not None and len(probe) >= 3:
+            health_checked = True
+            spread = max(probe) - min(probe)
+            verdict = "OK — degisiyor" if spread > 1e-4 else "UYARI: SABIT — golge NOOP kopuk olabilir!"
+            print(f"  [saglik kontrolu, ep{ep}] Q(obs_2,NOOP) FAZ A boyunca "
+                  f"{len(probe)} olcum: min={min(probe):+.4f} max={max(probe):+.4f} "
+                  f"fark={spread:.4f}  ({verdict})", flush=True)
+
+        harm_w.append(bool(info.get("harmed")))
+        if info.get("is_hard"):
+            hard_harm_w.append(bool(info.get("harmed")))
+        if ep % TRAIN_HARM_LOG_EVERY == 0:
+            harm_logger.writerow({
+                "episode": ep,
+                "train_harm_rate": round(float(np.mean(harm_w)), 4),
+                "train_harm_rate_hard": (round(float(np.mean(hard_harm_w)), 4)
+                                        if hard_harm_w else ""),
+                "n_hard_in_window": len(hard_harm_w),
+            })
+            harm_file.flush()
+
+        if ep % eval_every == 0 or ep == episodes:
+            ev = evaluate_vdn(agent, env, quick_configs, quick_difficulty)
+            row = {
+                "episode": ep, "steps": agent.steps, "eps": round(agent.eps, 4),
+                "eval_gap1_bad": ev["gap1_bad"],
+                "eval_mean_gap2": round(ev["mean_gap2"], 4),
+                "eval_block_rate": round(ev["block_rate"], 4),
+                "eval_detour_rate": round(ev["detour_rate"], 4),
+                "eval_harm_rate": round(ev["harm_rate"], 4),
+                "eval_hard_harm_rate": round(ev["hard_harm_rate"], 4),
+            }
+            logger.writerow(row)
+            log_file.flush()
+            print(f"  [ep {ep:6d}] A1-kotu {ev['gap1_bad']}/{quick_eval_n}"
+                  f"  A2-gap {ev['mean_gap2']:+.3f}"
+                  f"  kilit %{100*ev['block_rate']:.2f}"
+                  f"  zarar %{100*ev['harm_rate']:.2f}"
+                  f"  zarar(zor) %{100*ev['hard_harm_rate']:.2f}", flush=True)
+
+    log_file.close()
+    harm_file.close()
+    agent.save(f"{RUNS_DIR}/ckpt/{tag}.pt")
+    print(f"\nEgitim bitti: {time.time()-t0:.0f}s -> runs/ckpt/{tag}.pt")
+
+    print("\n=== ASAMA 5 KABUL KRITERI (TAM 14.400 konfig) ===")
+    ev = evaluate_vdn(agent, env, all_configs, all_difficulty)
+    print(f"  A1 optimal degil (gap1!=0)   : {ev['gap1_bad']}/{ev['n']}  (hedef: 0)")
+    print(f"  A2 ortalama gap (ORACLE'a gore): {ev['mean_gap2']:+.4f}  (hedef: ~0.0)")
+    print(f"  kilitleme orani               : %{100*ev['block_rate']:.2f}"
+          f"   (IQL: %0.84, random-shortest: %0.82)")
+    print(f"  ZARAR orani (genel)           : %{100*ev['harm_rate']:.2f}"
+          f"   (IQL: %12.91, hedef: <%2)")
+    print(f"  ZARAR orani (zor alt-kume, n={ev['hard_n']}): %{100*ev['hard_harm_rate']:.2f}"
+          f"   (IQL: %42.71, hedef: <%13.3 <-- VDN gercekten calisiyor mu kaniti)")
+    return {"agent": agent, "eval": ev}
+
+
 if __name__ == "__main__":
     p = argparse.ArgumentParser()
-    p.add_argument("--algo", default="dqn", choices=["dqn", "iql"])
+    p.add_argument("--algo", default="dqn", choices=["dqn", "iql", "vdn"])
     p.add_argument("--episodes", type=int, default=None)
     p.add_argument("--seed", type=int, default=SEED)
+    p.add_argument("--tag", default=None,
+                    help="cikti dosyalarinin oneki (varsayilan: --algo degeri)")
+    p.add_argument("--no-demo", action="store_true",
+                    help="iql/vdn icin: egitim sonrasi 10-episode gosterim+grafik adimini atla")
     args = p.parse_args()
 
     if args.algo == "dqn":
         episodes = args.episodes or DQN_EPISODES
         print(f"=== DQN egitimi | {episodes} episode | seed {args.seed} ===")
         train_dqn(episodes=episodes, seed=args.seed)
-    else:
+    elif args.algo == "iql":
         episodes = args.episodes or IQL_EPISODES
-        print(f"=== IQL egitimi | {episodes} episode | seed {args.seed} ===")
-        train_iql(episodes=episodes, seed=args.seed)
+        tag = args.tag or "iql"
+        print(f"=== IQL egitimi | {episodes} episode | seed {args.seed} | tag={tag} ===")
+        result = train_iql(episodes=episodes, seed=args.seed, tag=tag)
+        if not args.no_demo:
+            record_demo_episodes(result["agents"], tag=tag)
+            from viz.plot_iql_report import plot_demo_grids, plot_harm_curve
+            os.makedirs(f"{RUNS_DIR}/viz", exist_ok=True)
+            plot_harm_curve(tag, f"{RUNS_DIR}/viz/{tag}_harm_curve.png")
+            plot_demo_grids(tag, f"{RUNS_DIR}/viz/{tag}_demo_grids.png")
+    else:  # vdn
+        episodes = args.episodes or VDN_EPISODES
+        tag = args.tag or "vdn"
+        print(f"=== VDN egitimi | {episodes} episode | seed {args.seed} | tag={tag} ===")
+        result = train_vdn(episodes=episodes, seed=args.seed, tag=tag)
+        if not args.no_demo:
+            record_demo_episodes_vdn(result["agent"], tag=tag)
+            from viz.plot_iql_report import plot_demo_grids, plot_harm_curve
+            os.makedirs(f"{RUNS_DIR}/viz", exist_ok=True)
+            plot_harm_curve(tag, f"{RUNS_DIR}/viz/{tag}_harm_curve.png")
+            plot_demo_grids(tag, f"{RUNS_DIR}/viz/{tag}_demo_grids.png")

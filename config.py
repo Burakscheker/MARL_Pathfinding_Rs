@@ -84,6 +84,47 @@ IQL_LR = 1e-4
 IQL_TARGET_UPDATE = 2_000      # adim
 IQL_EVAL_EVERY = 4_000         # episode
 
+# Egitim SIRASINDAKI (epsilon-greedy) zarar orani icin yogun/hareketli-ortalama
+# loglama — kaba eval_every (4000) yerine "30000 run boyunca" turu bir egri
+# icin bu cok seyrek kalir. Neredeyse bedava: ekstra ag gecisi gerektirmez,
+# sadece play_episode'un zaten dondurdugu info["harmed"] bayragini biriktirir.
+TRAIN_HARM_WINDOW = 500        # hareketli ortalama penceresi (episode)
+TRAIN_HARM_LOG_EVERY = 100     # bu kadar episode'da bir CSV'ye yaz
+
+# Egitim SONRASI, epsilon=0 (tam deterministik) N gosterim episode'u —
+# haritalarini cizip gorsellestirmek icin.
+DEMO_EPISODES = 10
+DEMO_SEED = 777
+
+# ---------------------------------------------------------------- VDN (Asama 5)
+# Paylasilan TEK Q-agi (parametre paylasimi, agent_id/faz zaten gozlemde).
+# Q_tot = Q(obs_1,a_1) + Q(obs_2,a_2), TEK TD hatasi ikisine BIRDEN geri yayilir.
+# Golge NOOP (PLAN §2.2) burada gercek anlam kazaniyor: pasif ajanin Q(obs,NOOP)'u
+# da toplama girer ve gradyan alir — IQL'de push() bile edilmiyordu.
+VDN_EPISODES = 40_000
+VDN_BUFFER = 300_000           # ortak (joint) transition — her satir BIR global timestep
+VDN_BATCH = 128
+# DIKKAT: VDN'in TEK paylasilan agi her t'de (HER IKI ajan icin de) sayaci
+# ilerletir; IQL'in agent basina AYRI sayaclari sadece o ajanin AKTIF oldugu
+# yarim fazda ilerliyordu. Yani ayni sayisal esik VDN'de ~2x daha HIZLI
+# (episode cinsinden) tukeniyor. Ilk 40k-episode kosuda bu 40_000 degeriyle
+# epsilon ep~2500'de tabana indi (IQL'de ep~6000-7000) ve A1 pek cok konfigde
+# 2-hucreli bir Q-salinimina (asagi/yukari sonsuz dongu) kilitlenip kacamadi
+# (reached1_frac sadece %17.1 cikti). 80_000, VDN'in episode-basina decay
+# hizini IQL'inkiyle YAKLASIK esitler.
+VDN_EPS_DECAY_STEPS = 80_000   # adim (paylasilan agin GLOBAL adim sayaci)
+VDN_LEARN_START = 1_000
+# DIKKAT: ilk denemede DQN_LR (1e-4) + DQN_TARGET_UPDATE (2000) ile VDN
+# ep~1750 civarinda (A1-yalniz 600 ciftlik izole navigasyon testinde 237/600)
+# tepe yapip COKUYORDU (ep3000'de 167/600'e dusuyordu) -- Q_tot = Q1+Q2'nin
+# TEK, PAYLASILAN agdan gelen ORTAK TD hatasi, ayri-agli IQL/DQN'e gore cok
+# daha kirilgan/ossilasyona yatkin. LR'i 1e-4->3e-5 ve target_update'i
+# 2000->4000 yapinca AYNI izole test 12000 episode'da 486/600'e MONOTON
+# yukseldi, cokme gorulmedi. Bunlari degistirmeden VDN'i egitme.
+VDN_LR = 3e-5
+VDN_TARGET_UPDATE = 4_000
+VDN_EVAL_EVERY = 4_000
+
 # ---------------------------------------------------------------- gozlem boyutu
 OBS_CHANNELS = 5               # own, other, goal, forbidden, own_visited
 N_SCALARS = 4                  # agent_id, phase, t/max, kalan_manhattan/max

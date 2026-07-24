@@ -6,7 +6,7 @@ tutarsizligi bir hata kaynagiydi, burada bastan onleniyor).
 """
 from typing import Optional
 
-from config import AGENT_1, AGENT_2
+from config import AGENT_1, AGENT_2, NOOP
 from env.grid_env import MARLGridEnv
 
 Cell = tuple[int, int]
@@ -55,6 +55,64 @@ def play_episode(env: MARLGridEnv, agents: dict, train: bool,
             loss = agents[agent].learn()
             if loss is not None:
                 losses[agent].append(loss)
+
+        obs = next_obs
+
+    return info, losses
+
+
+def play_episode_vdn(env: MARLGridEnv, agent, train: bool,
+                     config: Optional[tuple[Cell, Cell, Cell]] = None,
+                     health_probe: Optional[list] = None) -> tuple[dict, list]:
+    """VDN icin ORTAK episode calistirici — PLAN §Asama 5.
+
+    play_episode (IQL, yukarida) ile TEK mimari fark: HER t'de HER IKI ajanin
+    (obs, aksiyon) cifti AYNI joint transition'a yazilir (golge NOOP DAHIL —
+    pasif ajanin push()'u IQL'de hic yoktu). Boylece agent.learn()'un TEK TD
+    hatasi ikisine BIRDEN geri yayilir; bu VDN'i IQL'den ayiran tek sey.
+
+    Ayrica bu tasarim IQL'in own_done/is_truncated (faz-degisimi-farkinda)
+    mantigina gerek BIRAKMAZ: joint episode TEK (env.done), butun timestep'ler
+    (iki faz + faz siniri dahil) tek dongude ayni sekilde islenir.
+
+    health_probe verilirse (bos liste), FAZ A boyunca Q(obs_2, NOOP) degerlerini
+    biriktirir — PLAN'daki saglik kontrolu: bu deger SABIT KALIRSA golge NOOP'un
+    gozlemi guncellenmiyordur (en sinsi bug, bkz. PLAN §Asama 5).
+    """
+    obs = env.reset(config=config)
+    done = False
+    losses: list = []
+    info: dict = {}
+
+    while not done:
+        active = env.active
+        passive = 1 - active
+        mask_active = env.action_mask(active)
+        eps = None if train else 0.0
+        a_active = agent.act(active, obs[active], mask_active, eps=eps)
+
+        if health_probe is not None and env.phase == 0:
+            health_probe.append(agent.q_value(passive, obs[passive], NOOP))
+
+        next_obs, r_team, done, info = env.step(a_active)
+        a1 = a_active if active == AGENT_1 else NOOP
+        a2 = a_active if active == AGENT_2 else NOOP
+
+        if train:
+            is_truncated = done and info.get("timeout", False)
+            push_done = done and not is_truncated
+            # Bootstrap icin HER ZAMAN fiziksel maske: done=True ise buffer
+            # zaten done bayragiyla (1-done) carpip mask'i devre disi birakiyor
+            # (JointReplayBuffer.push), done=False ise (faz siniri dahil) bu
+            # gercek legal-aksiyon maskesidir — action_mask()'in "pasif ajanda
+            # sadece NOOP" collapse'ine BURADA ihtiyac yok.
+            nm1 = env.physical_mask(AGENT_1)
+            nm2 = env.physical_mask(AGENT_2)
+            agent.push(obs[AGENT_1], a1, obs[AGENT_2], a2, r_team,
+                      next_obs[AGENT_1], next_obs[AGENT_2], push_done, nm1, nm2)
+            loss = agent.learn()
+            if loss is not None:
+                losses.append(loss)
 
         obs = next_obs
 
