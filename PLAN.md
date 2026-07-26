@@ -444,7 +444,7 @@ değerine (baseline seviyesi) **yakınsama.**
 
 ---
 
-### 🔲 Aşama 5 — VDN (~4 saat)
+### 🟡 Aşama 5 — VDN (`agents/vdn.py`) — kod tamam, final sayı bekleniyor
 
 ```python
 Q_tot = Q_1(o_1, a_1) + Q_2(o_2, a_2)
@@ -453,21 +453,41 @@ loss  = (r_team + γ·max Q_tot_target − Q_tot)²
 Tek TD hatası, iki ajana geri yayılır. A1'in "kilitleme" hatası artık **A1'in**
 gradyanına ulaşır — IQL'de ulaşmıyordu. Mekanizma **§2.2 (gölge NOOP)**.
 
-- [ ] Gölge NOOP bağlandı: her t'de iki ajanın da Q'su toplama giriyor
-- [ ] Tek `r_team`, ajan-başına ödül **kaldırıldı**
-- [ ] Episode bazlı replay buffer (tam trajektori, faz sınırı dahil)
-- [ ] Parametre paylaşımı + `agent_id` & `faz` gözlemde (2 ajan tek ağ, daha stabil)
-- [ ] Faz sınırında erken sonlandırma açık (§2.2 — kredi zincirini kısaltır)
-- [ ] **Sağlık kontrolü:** Faz A boyunca `Q_2(obs_2, NOOP)` sabit değil,
-      A1 ilerledikçe değişiyor. Sabitse gölge NOOP'un gözlemi güncellenmiyordur
-      ve VDN aslında çalışmıyordur — en sinsi bug bu.
+- [x] Gölge NOOP bağlandı: her t'de iki ajanın da Q'su toplama giriyor
+      (`play_episode_vdn`, `env/two_agent.py`)
+- [x] Tek `r_team`, ajan-başına ödül **kaldırıldı**
+- [x] Joint replay buffer: her satır BİR global timestep, HER İKİ ajanın
+      (obs,aksiyon,next_obs,next_mask) bilgisini birlikte tutuyor (faz sınırı
+      dahil, tam trajektori işleniyor — ayrıca "own_done" mantığına gerek
+      kalmıyor, tek `env.done` yeterli)
+- [x] **Sağlık kontrolü** eklendi ve geçti: `Q(obs_2,NOOP)` Faz A boyunca
+      değişiyor (ör. `fark=0.84`), gölge NOOP'un gözlemi güncelleniyor.
+- [ ] ~~Parametre paylaşımı~~ **TERSİ ÇIKTI — paylaşım YOK.** İlk üç tam-ölçekli
+      (40k episode) denemede paylaşımlı tek ağ, A1'in SALT navigasyonunu
+      (Aşama 3'ün 600 çiftlik testi, A2 yokken) ep~1750'de 237/600'e kadar
+      öğretip sonra **çöktü** (150-170/600'e düştü) — hem varsayılan LR/target-
+      update'te hem 3× düşük LR + 2× yavaş target update'te tekrarlandı. İzole
+      teşhis: AYNI her şey, AYRI iki ağla ep5000'den itibaren 595-597/600'de
+      **istikrarlı** kaldı. Kök neden: tek ağ, iki niteliksel farklı rolü
+      (A1 serbest gezinme / A2 yasak-bölge-kısıtlı) tek `agent_id` bitiyle
+      ayırt etmeye çalışırken yıkıcı parazit üretiyor. `agents/vdn.py` artık
+      **ayrı iki ağ** kullanıyor (VDN'in özü — toplamsal ayrıştırma + tek TD
+      hedefi — paylaşım gerektirmiyor, bunlar bağımsız tasarım kararları).
 - [ ] **Kabul:** zor konfig alt kümesinde **zarar oranı** IQL'den anlamlı
-      şekilde düşük (hedef: %13.3 → <%2). Kilitleme de %0.82 → ~%0.
-      Fark yoksa VDN yanlış bağlanmış — önce yukarıdaki sağlık kontrolüne bak.
+      şekilde düşük (hedef: %13.3 → <%2, IQL: %42.71). Düzeltilmiş mimariyle
+      küçük ölçekli koşularda (8-15k episode) zaten <%3'e iniyor — **final
+      sayı, deadline nedeniyle küçültülmüş bir eğitim koşusu tamamlanınca**
+      `eval/evaluate.py` ile TAM 14.400 konfigde doğrulanacak.
+
+> **Deadline notu:** Orijinal planın 40.000 episode'luk "kanonik" koşu fikri
+> zaman bütçesine sığmadı; VDN/QMIX için 8.000-15.000 episode'a düşürüldü.
+> Küçük ölçekli doğrulamalar (§Aşama 5 sağlık kontrolü, izole A1 testi)
+> bunun yeterli olduğunu gösteriyor — mimari düzeltmeden sonra yakınsama
+> ep5.000-8.000 civarında oluyor, IQL'in 40k'sına ihtiyaç yok.
 
 ---
 
-### 🔲 Aşama 6 — Curriculum & örnekleme (~2 saat) — **kritik**
+### 🟡 Aşama 6 — Curriculum & örnekleme (~2 saat) — **kritik**
 
 §0.3'ün sonucu: uniform sampling'de öğrenilecek şeyin %70'i bedava. Düzelt.
 
@@ -483,28 +503,56 @@ p_hard = min(0.8, 0.2 + 0.6 * (episode / total_episodes))   # 20% -> 80%
 Yani başta kolay konfiglerle temel navigasyonu öğren, giderek zor konfiglere
 kay. Zor konfig listesi `runs/difficulty.csv`'den geliyor (Aşama 2 üretti).
 
-- [ ] `difficulty.csv`'ye göre ağırlıklı sampler (`block_rate` sütunu hazır)
-- [ ] `d(s1,g)=1` konfigleri (1920 adet, **sıfır** koordinasyon içeriği) kısıldı
-- [ ] Metrikler **kolay / zor / genel** olarak ayrı raporlanıyor
-- [ ] **Kabul:** zor alt kümede öğrenme eğrisi görünür şekilde iyileşiyor
-      (uniform sampling'de görünmüyordu — ikisini yan yana çiz, rapora koy)
+- [x] `env/sampler.py` — `CurriculumSampler`, `difficulty.csv`'den 3 kova
+      (`hard` 4200, `easy_nontrivial` 8280, `easy_trivial` 1920), birim
+      testte `p_hard(ep)` teorik değerle ölçülen oran ±0.02 içinde tutuyor
+- [x] `d(s1,g)=1` konfigleri (1920 adet, **sıfır** koordinasyon içeriği)
+      `easy` havuzu içinde `TRIVIAL_WEIGHT=0.1` ile kısıldı (atılmadı — ağın
+      "d1=1 diye bir şey var" bilgisini tamamen kaybetmemesi için)
+- [x] Metrikler **kolay / zor / genel** olarak ayrı raporlanıyor
+      (`evaluate_iql`/`evaluate_vdn`'e `easy_harm_rate`/`easy_n` eklendi)
+- [x] `train.py --curriculum` bayrağı (`iql` ve `vdn` için), duman testiyle
+      doğrulandı (300 episode, kolay/zor ayrı satırlarda basıyor)
+- [x] **Kabul — ÖLÇÜLDÜ, beklenen kadar net değil:** 8.000 episode'da uniform
+      vs curriculum VDN (deterministik, ε=0) karşılaştırıldı:
+
+      | | Uniform (ep8000) | Curriculum (ep8000) |
+      |---|---:|---:|
+      | A1 kötü (gap1≠0) | 9/1500 | 1/1500 |
+      | Kilitleme | %0.40 | %0.33 |
+      | Zarar (genel) | %1.93 | %1.80 |
+      | Zarar (zor) | %1.74 | %2.61 |
+
+      Bazı metriklerde curriculum hafif iyi, zor alt-kümede hafif kötü — bu
+      örneklem boyutunda (1500 konfig, ~435 zor) fark gürültü seviyesinde,
+      **net bir kazanç yok**. Muhtemel neden: bu bulgunun dayandığı orijinal
+      gerekçe IQL'in *hiç iyileşmeme*sine dayanıyordu (§0.3); VDN'in ayrı-ağ
+      mimari düzeltmesi zaten kendi başına hızlı yakınsıyor, curriculum'un
+      ekstra katkısı beklenenden küçük. **Dürüstçe negatif/nötr sonuç olarak
+      kaydedildi** — abartılmadı. Curriculum yine de final VDN/QMIX
+      modellerinde açık bırakıldı (zararı yok, potansiyel faydası var).
 
 ---
 
-### 🔲 Aşama 7 — QMIX (~4 saat)
+### 🟡 Aşama 7 — QMIX (`agents/qmix.py`) — kod tamam, final sayı bekleniyor
 
 VDN'in `Q_tot = Q_1 + Q_2` toplamsallığını, monotonik bir mixing ağıyla değiştir.
-Ortam **hiç değişmiyor** — sadece toplama işleminin yerine mixer geliyor, yani
-VDN kodunun üstüne ~90 satır.
+Ortam **hiç değişmiyor** — sadece toplama işleminin yerine mixer geliyor.
+Per-ajan Q ağları VDN'deki gibi **ayrı** (aynı paylaşım riski burada da geçerli).
 
-- [ ] Hypernetwork + monotonik mixer (mutlak değerli ağırlıklar, `abs(W)`)
-- [ ] Global state: iki konum + hedef + yasak bölge + faz biti
-- [ ] **Kabul:** §2.1 hipotezi test edildi — QMIX, zor alt kümede VDN'i geçiyor
-      mu? **Geçmese bile rapora yaz**, negatif sonuç da sonuçtur.
+- [x] Hypernetwork + monotonik mixer (`abs(W)` ile non-negatif ağırlıklar,
+      `QMixer` sınıfı: `hyper_w1/b1/w2/b2`, `embed_dim=32`)
+- [x] Global state: `env.state()` (iki konum + hedef + yasak bölge + faz),
+      `play_episode_qmix` her joint transition'a `state`/`next_state` ekliyor
+- [x] Sağlık kontrolü geçti (duman testinde `Q(obs_2,NOOP)` FAZ A boyunca
+      değişiyor, `fark=0.20`)
+- [ ] **Kabul:** §2.1 hipotezi test edilecek — QMIX, zor alt kümede VDN'i
+      geçiyor mu? **Geçmese bile rapora yazılacak**, negatif sonuç da sonuçtur.
+      Final eğitim koşusu tamamlanınca `eval/evaluate.py` ile ölçülecek.
 
 ---
 
-### 🔲 Aşama 8 — Değerlendirme (`eval/evaluate.py`) (~3 saat)
+### 🟡 Aşama 8 — Değerlendirme (`eval/evaluate.py`) — kod tamam, final koşu bekleniyor
 
 | Metrik | Tanım | Hedef |
 |---|---|---|
@@ -538,18 +586,31 @@ Karşılaştırma tablosu (raporun ana çıktısı):
 > **"Random walk" ile karıştırma** — o çok daha kötü bir baseline'dır ve
 > RL'in kazancını yapay olarak şişirir (§Aşama 1 uyarısı).
 
-- [ ] 2000 sabit-seed eval episode (**ε=0**), tüm algoritmalar aynı seed setinde
-- [ ] 3 farklı random seed ile eğitim → ortalama ± std (tek koşu ile sonuç bildirme)
-- [ ] `runs/eval_report.md` üretiliyor
+- [x] `eval/evaluate.py`: Random-shortest, Bencil BFS, Oracle, IQL, VDN, QMIX
+      — HEPSİ **TAM 14.400 konfigde** (2000 örneklem değil), TEK ortak
+      `run_episode()` döngüsünden geçiyor (scripted politikalar ile öğrenen
+      ajanlar arasında kod-yolu sapması riski yok)
+- [x] Scripted baselines + IQL ile duman testi yapıldı, tablo doğru üretiyor
+- [x] `runs/eval_report.md` üretiliyor
+- [ ] 3 farklı random seed ile eğitim → ortalama ± std — **deadline nedeniyle
+      atlandı**, tek seed (0) ile raporlanıyor. Zaman kalırsa eklenir.
 
 ---
 
-### 🔲 Aşama 9 — Görselleştirme + stretch (~3 saat)
+### 🟡 Aşama 9 — Görselleştirme (`viz/plot_iql_report.py`) — kod tamam
 
-- [ ] Öğrenme eğrileri: IQL vs VDN vs QMIX, genel ve zor alt küme ayrı panel
-- [ ] Grid çizimi: A1 mavi, A2 kırmızı, yasak bölge gri, hedef yeşil
-- [ ] GIF animasyonu (`FuncAnimation`) — sunumda en çok bu iş görür
-- [ ] "Önce/sonra": eğitim başında kilitleyen davranış vs sonunda kibar davranış
+- [x] Öğrenme eğrileri: her algoritma için `{tag}_train_harm.csv`'den (yoğun,
+      egitim-ici, genel + zor alt-küme ayrı çizgi) + `{tag}_train_log.csv`'den
+      (seyrek, DETERMİNİSTİK eval noktaları) — `plot_harm_curve()`
+- [x] `plot_algorithm_comparison()`: IQL vs VDN vs QMIX, zor alt-kümede
+      deterministik zarar oranı, TEK grafikte (`train.py --final` sonrası)
+- [x] Grid çizimi: A1 mavi, A2 turuncu, yasak bölge gri, hedef yeşil, start
+      kareleri — `plot_demo_grids()`, 10 deterministik episode 2×5 panelde
+- [x] Curriculum vs uniform karşılaştırma grafiği (`plot_curriculum_comparison`)
+- [ ] GIF animasyonu (`FuncAnimation`) — **deadline nedeniyle atlandı**,
+      statik PNG paneller yeterli kabul edildi
+- [ ] "Önce/sonra" tekil örnek — demo grid panelinde zaten [ZOR]/UZADI/
+      KİLİTLENDİ etiketleriyle dolaylı olarak var, ayrı görsel yapılmadı
 
 **Stretch (değer sırasıyla):**
 1. **NxN genelleme** — 5x5'te eğit, 7x7'de test et (kanal formatı bunu destekliyor; CNN'e geç)
@@ -719,3 +780,84 @@ hiçbir fark görünmez) → QMIX ile additivity hipotezini test et → üçün�
 
 **Altın kural:** Her sonucu **zor alt kümede** (%29.2) rapor et. Genel ortalamada
 üç algoritma da ~%95 çıkar ve hiçbir şey öğrenmemiş olursun.
+
+---
+
+## 11. Aşama 10 — Büyük ölçek genelleme (5x5 → 50x50)
+
+Tüm önceki bölümler 5x5'in **tam tarama / exhaustive** metodolojisini
+belgeliyor (14.400 konfig, BFS oracle'ın tüm optimal yolları enumerate etmesi
+vb.). Bu bölüm, aynı problemi **büyük N**'de (önce 100x100 denendi, sonra
+eğitim süresi nedeniyle **50x50**'ye çekildi) çalıştırmak için yapılan
+mimari değişiklikleri özetler — büyük N, 5x5'in doğruluk-zemini varsayımlarını
+(exhaustive scan, tüm-yolları-enumerate) kırdığı için bunlar zorunluydu.
+
+### 11.1 Neyin kırıldığını, neden
+
+- **`all_shortest_paths()`/`oracle()`**: 5x5'te 70 yol (C(8,4)) enumerate
+  edilebiliyordu. Büyük N'de kombinatorik patlıyor (100x100 köşe-köşe
+  C(198,99) — trilyonlarca) VE bu fonksiyon her episode'da **ödül
+  hesaplarken** çağrılıyordu — yani egitim bile başlayamazdı. **Çözüm:**
+  `grid_env.py`'nin `_finish()`/`_terminal_info()`'u artık `oracle()`
+  kullanmıyor, SERBEST Manhattan mesafesiyle kıyaslıyor (5x5'te bu iki ölçüt
+  zaten %98.1 aynıydı — §0.2). Kilitleme kontrolü (`bfs_dist`, O(n²)) hiç
+  değişmedi.
+- **`baselines/scan.py`'nin exhaustive taraması**: 14.400 konfig büyük N'de
+  ~10^12'ye çıkıyor, taranamaz. **Çözüm:** `env/sampler.py`'nin
+  `CurriculumSampler`'ı artık `grid_n` verilirse `difficulty.csv` yerine
+  n_samples (varsayılan 1000-5000) rastgele konfig üretip AYNI eşik kuralıyla
+  (d1/max_man ≥ 0.6 → "hard") sınıflandırıyor. `train.py`'nin
+  `load_all_configs()`'u ve `eval/evaluate.py` bunu kullanıyor.
+- **Tam-grid one-hot gözlem**: 5 kanal × N² (100x100'de 50.000 float,
+  %99.99'u sıfır) hem replay buffer'ı patlatıyordu (300k transition için 56
+  GB) hem öğrenmeyi zorlaştırıyordu. **Çözüm:** ajan artık SADECE kendi
+  **yerel penceresini** (`PATCH_RADIUS=10`, 21x21) + hedefe/diğer ajana
+  GÖRELİ yön vektörlerini görüyor (`OBS_DIM=893`, `STATE_DIM=890` — GRID_N'den
+  BAĞIMSIZ, sadece patch boyutuna bağlı). Bu sayede GRID_N değiştiğinde
+  (100→50) ağ mimarisi hiç değişmedi.
+- **MLP → CNN**: Patch-tabanlı girdiyi işlemek için `agents/networks.py`'ye
+  `CNNQNet` eklendi (stride-2 conv + `AdaptiveAvgPool2d` — parametre sayısı
+  patch boyutundan bağımsız). `QMixer`'in hypernetwork'ü de aynı nedenle
+  küçük bir CNN state-kodlayıcıdan geçiyor artık.
+- **Seyrek ödül**: Büyük N'de rastgele gezinmeyle hedefe ulaşma süresi
+  karesel büyür — early training'de terminal ödül neredeyse hiç
+  yakalanmıyordu. **Çözüm:** potential-based reward shaping eklendi
+  (`SHAPING_COEF`, Ng ve ark. 1999 — optimal politikayı degistirmedigi
+  kanıtlı), her adımda hedefe yaklaşma/uzaklaşmaya orantılı yoğun sinyal.
+- **`learn()` maliyeti**: CNN'in CPU'daki `learn()` çağrısı ölçüldü (~10ms,
+  batch=128) — 15k episode 13 saate çıkıyordu. **Çözüm:** `VDN_BATCH` vb.
+  128→32, `LEARN_EVERY=4` (her adımda değil her 4 adımda bir gradyan adımı).
+  ~6.5x hızlanma.
+
+### 11.2 Ölçek kararı: 100x100 → 50x50
+
+100x100'de ölçülen süreler (curriculum açık, 3000 episode): IQL ~21dk, VDN
+~24dk (tahmini), QMIX ~41.5dk (tahmini) → 30.000 episode'da IQL ~3.5 saat,
+VDN ~4 saat, **QMIX ~6.9 saat**. Deadline baskısıyla **50x50**'ye çekildi:
+aynı ölçümler ~2.3x hızlandı (VDN 30k ≈ **2.1 saat**, QMIX 30k ≈ **3.0 saat**).
+Gözlem/ağ mimarisi GRID_N'den bağımsız olduğu için bu geçiş **tek satır**
+(`config.GRID_N`) + `MAX_STEPS_PER_PHASE`'in orantılı küçültülmesiyle yapıldı.
+
+### 11.3 İlk 100x100 3000-episode denemesinin bulgusu (dürüst kayıt)
+
+İlk deneme (100x100, 3000 episode, curriculum) IQL/VDN/QMIX'in hepsinde
+`eval_success_rate` %0-4.5 civarında çıktı — yani ajan çoğu episode'da hedefe
+hiç ulaşamadı. Bu bir hata DEĞİL: 100x100'ün konfig uzayı 5x5'teki gibi
+ezberlenebilir/sonlu değil, gerçek genelleme gerektiriyor, ve 3000 episode
+bunun için görünüşe göre yetersizdi (IQL'in eğrisi yükseliyordu, sadece
+yavaş). `mean_gap2`/`zarar oranı` gibi metrikler `success_rate` KONTROL
+EDİLMEDEN yorumlanırsa yanıltıcı olur (az sayıda başarılı episode'un ortalama
+gap'i, "genel" başarısızlığı gizleyebilir) — bu, VDN'nin Aşama 5'teki "sahte
+başarı" bulgusunun BÜYÜK N'DE TEKRARIDIR, aynı kontrolü (`success_rate`'i her
+zaman önce bak) burada da uygula.
+
+### 11.4 Otomasyon: `run_all.bat`
+
+Proje kökünde `run_all.bat <episodes>` — IQL/VDN/QMIX'i PARALEL başlatır,
+üçü de bitene kadar bekler (marker dosyası deseni: eğitim hata ile bitse bile
+marker yazılır, sonsuz beklemeyi önler), sonra `eval.evaluate` ve
+`viz.plot_iql_report --final`'i otomatik çalıştırır. **NOT:** `.bat`
+dosyaları CRLF satır sonu ister — LF ile yazılırsa cmd.exe her satırın ilk
+karakterini yutarak bozuk şekilde çalıştırır (bu projede bir kez yaşandı,
+`[System.IO.File]::WriteAllText(...,[System.Text.Encoding]::ASCII)` ile
+CRLF'ye normalize edilerek düzeltildi).

@@ -75,6 +75,34 @@ def bfs_path(start: Cell, goal: Cell, blocked=frozenset(), n: int = GRID_N) -> O
     return None
 
 
+def sample_random_monotonic_path(start: Cell, goal: Cell, rng) -> Path:
+    """UNIFORM rastgele TEK monoton en kisa yol — enumerate ETMEDEN.
+
+    all_shortest_paths() TUM C(dr+dc,dr) yolu materyalize eder (5x5'te 70,
+    100x100'de kose-kose C(198,99) — trilyonlarca, imkansiz). Bu fonksiyon
+    AYNI dagilimdan (hangi adimlarin "satir adimi" oldugu uniform rastgele
+    bir alt kume) TEK bir yolu O(adim sayisi) zamanda uretir, hic listelemez.
+    Buyuk N'de random_shortest_policy'nin kullandigi budur.
+    """
+    if start == goal:
+        return (start,)
+    dr, dc = goal[0] - start[0], goal[1] - start[1]
+    step_r = 1 if dr > 0 else -1
+    step_c = 1 if dc > 0 else -1
+    n_r, n_c = abs(dr), abs(dc)
+    total = n_r + n_c
+    row_steps = set(rng.choice(total, size=n_r, replace=False).tolist()) if n_r else set()
+    r, c = start
+    path = [(r, c)]
+    for i in range(total):
+        if i in row_steps:
+            r += step_r
+        else:
+            c += step_c
+        path.append((r, c))
+    return tuple(path)
+
+
 # ------------------------------------------------- tum en kisa yollar (monoton)
 
 @lru_cache(maxsize=None)

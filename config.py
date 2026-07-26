@@ -4,7 +4,7 @@ PLAN.md ile senkron tut: ozellikle odul degerleri (§5) ve max_steps (§Asama 1)
 """
 
 # ---------------------------------------------------------------- grid / ortam
-GRID_N = 5
+GRID_N = 50
 N_AGENTS = 2
 
 AGENT_1 = 0          # once giden, izi yasak bolge olan ajan
@@ -18,8 +18,15 @@ ACTION_NAMES = ("UP", "RIGHT", "DOWN", "LEFT", "NOOP")
 # (d_satir, d_sutun) — NOOP dahil degil, o ayri ele aliniyor
 DIRS = ((-1, 0), (0, 1), (1, 0), (0, -1))
 
-# Faz basina adim limiti. 5x5'te en uzun optimal yol 8; 15 fazlasiyla yeter.
-MAX_STEPS_PER_PHASE = 15
+# Faz basina adim limiti. 50x50'de en uzun optimal yol 98 (49+49);
+# egitimin ilk asamalarinda politika henuz yon bulmayi ogrenmemisken biraz
+# dolanmaya izin vermek icin ~1.4x tampon (140, 100x100'un 270'iyle ayni oran).
+# Cok comert tutulmadi: her fazlalik adim, ozellikle rastgele-a-yakin erken
+# episode'larda, dogrudan egitim suresine ekleniyor.
+# NOT: OBS_DIM/STATE_DIM (asagida) PATCH_SIZE'a bagli, GRID_N'e DEGIL — grid
+# boyutu degistiginde ag mimarisi hic etkilenmiyor (yerel-pencere tasariminin
+# faydasi tam burada).
+MAX_STEPS_PER_PHASE = 140
 MAX_STEPS_TOTAL = 2 * MAX_STEPS_PER_PHASE
 
 # Ajanlar ayni hucreden baslayabilir mi (PLAN §0.1: 600 konfig)
@@ -39,12 +46,27 @@ R_TIMEOUT = -3.0      # herhangi bir fazda max_steps asildi
 # -1.0 ceza, +3.0'lik takim bonusuna karsi anlamli bir agirlik.
 R_OPT_GAP = -0.50
 
+# Potential-based reward shaping katsayisi (Ng ve ark. 1999) — grid_env.py
+# step()'te uygulanir: r' = r + COEF*(gamma*Phi(s')-Phi(s)), Phi(s)=-manhattan/max.
+# 100x100'de SEYREK terminal odulun rastgele/az-egitilmis politikayla neredeyse
+# hic yakalanamamasi sorununu cozer (duzlemde rastgele yurusun hedefe varis
+# suresi N ile karesel buyur) — HER ADIMDA hedefe yaklasma/uzaklasmaya
+# orantili yogun sinyal ekler. Optimal politikayi degistirmedigi KANITLANMIS
+# (herhangi bir Phi icin policy-invariance garantisi).
+SHAPING_COEF = 1.0
+
 # ---------------------------------------------------------------- egitim (ortak)
 SEED = 0
 GAMMA = 0.99
 LR = 5e-4
 GRAD_CLIP = 10.0
 HIDDEN = 128
+
+# CNN'in learn() cagrisi CPU'da ~10ms olcduldu (6 ileri gecis: online/target x
+# A1/A2 x mevcut/sonraki-Q). HER env adiminda degil, LEARN_EVERY adimda bir
+# gercek gradyan adimi atarak (araya giren push()'lar hala buffer'a giriyor,
+# sadece learn() hesaplamasi atlaniyor) toplam egitim suresini ~4x kisaltir.
+LEARN_EVERY = 4
 
 # ---------------------------------------------------------------- MARL (Asama 4+)
 EPS_START, EPS_END, EPS_DECAY_STEPS = 1.0, 0.05, 50_000
@@ -59,7 +81,8 @@ TOTAL_EPISODES = 100_000
 # epsilon ADIM sayisina gore soner, episode sayisina gore degil.
 DQN_EPISODES = 30_000
 DQN_BUFFER = 100_000           # transition
-DQN_BATCH = 128                # transition
+DQN_BATCH = 32                 # transition (128->32: CNN'de learn() CPU'da ~10ms/cagri
+                               # olculdu, buyuk N'de 15k episode 13 saate cikiyordu)
 DQN_EPS_DECAY_STEPS = 30_000   # adim
 DQN_LEARN_START = 1_000        # bu kadar transition birikmeden ogrenme
 DQN_LR = 1e-4                  # genel LR'den (5e-4) daha dusuk: Q-divergence onlemi
@@ -75,14 +98,17 @@ P_HARD_START, P_HARD_END, P_HARD_CAP = 0.20, 0.80, 0.80
 # kendi hedef bonusu iceriyor; kilitleme/takim/optimallik cezalari r_team'e
 # ait, r_ind'e hic eklenmiyor). Episode basina iki faz oldugu icin Asama 3'e
 # gore hem daha az episode hem daha genis buffer/decay yeterli.
-IQL_EPISODES = 40_000
-IQL_BUFFER = 150_000           # transition, ajan basina
-IQL_BATCH = 128
+# 100x100 NOTU: olcum, IQL episode basina ~0.33s (CNN + LEARN_EVERY=4 ile).
+# 40.000 episode ~3.7 saat surerdi -- deadline'a sigmaz. 3000 episode ~17dk.
+IQL_EPISODES = 3_000
+IQL_BUFFER = 100_000           # transition, ajan basina (bellek: ~15.6GB RAM'e gore ayarlandi)
+IQL_BATCH = 32
 IQL_EPS_DECAY_STEPS = 40_000   # adim, ajan basina
 IQL_LEARN_START = 1_000
 IQL_LR = 1e-4
 IQL_TARGET_UPDATE = 2_000      # adim
-IQL_EVAL_EVERY = 4_000         # episode
+IQL_EVAL_EVERY = 500           # episode (kucuk N'deki 4000 100x100'de egitimin
+                               # sonuna kadar hic tetiklenmezdi -- egri icin cok seyrek)
 
 # Egitim SIRASINDAKI (epsilon-greedy) zarar orani icin yogun/hareketli-ortalama
 # loglama — kaba eval_every (4000) yerine "30000 run boyunca" turu bir egri
@@ -101,9 +127,10 @@ DEMO_SEED = 777
 # Q_tot = Q(obs_1,a_1) + Q(obs_2,a_2), TEK TD hatasi ikisine BIRDEN geri yayilir.
 # Golge NOOP (PLAN §2.2) burada gercek anlam kazaniyor: pasif ajanin Q(obs,NOOP)'u
 # da toplama girer ve gradyan alir — IQL'de push() bile edilmiyordu.
-VDN_EPISODES = 40_000
-VDN_BUFFER = 300_000           # ortak (joint) transition — her satir BIR global timestep
-VDN_BATCH = 128
+# 100x100 NOTU: VDN episode basina ~0.48s olculdu. 3000 episode ~24dk.
+VDN_EPISODES = 3_000
+VDN_BUFFER = 150_000           # ortak (joint) transition — her satir BIR global timestep (bellek guvenligi)
+VDN_BATCH = 32
 # DIKKAT: VDN'in TEK paylasilan agi her t'de (HER IKI ajan icin de) sayaci
 # ilerletir; IQL'in agent basina AYRI sayaclari sadece o ajanin AKTIF oldugu
 # yarim fazda ilerliyordu. Yani ayni sayisal esik VDN'de ~2x daha HIZLI
@@ -123,16 +150,57 @@ VDN_LEARN_START = 1_000
 # yukseldi, cokme gorulmedi. Bunlari degistirmeden VDN'i egitme.
 VDN_LR = 3e-5
 VDN_TARGET_UPDATE = 4_000
-VDN_EVAL_EVERY = 4_000
+VDN_EVAL_EVERY = 500
+
+# ---------------------------------------------------------------- QMIX (Asama 7)
+# VDN'in Q_tot = Q_1+Q_2 toplamsalligini monotonik bir mixing agiyla degistirir
+# (hypernetwork: agirliklari GLOBAL STATE'ten uretir, abs(W) ile monotonluk
+# garanti edilir). Per-ajan Q aglari VDN'deki gibi AYRI (agents/vdn.py'deki
+# ayrik-ag bulgusu burada da gecerli — ayni nedenle paylasilmiyor). Ayni
+# LR/target_update VDN'de stabil oldu, QMIX'te de baslangic noktasi olarak
+# kullaniliyor.
+# 100x100 NOTU: QMIX episode basina ~0.83s (mixer'in CNN state-kodlayicisi
+# ekstra maliyet katiyor). 3000 episode ~41dk -- VDN/IQL ile ADIL kiyaslama
+# icin AYNI episode sayisi tutuldu (farkli sayida verilse karsilastirma
+# egitim MIKTARI farkindan mi yoksa algoritma farkindan mi geldigi karisir).
+QMIX_EPISODES = 3_000
+QMIX_BUFFER = 100_000           # state/next_state ekstra yer kapladigi icin VDN'den kucuk
+QMIX_BATCH = 32
+QMIX_EPS_DECAY_STEPS = 80_000
+QMIX_LEARN_START = 1_000
+QMIX_LR = 3e-5
+QMIX_TARGET_UPDATE = 4_000
+QMIX_EVAL_EVERY = 500
+QMIX_MIXER_EMBED = 32           # mixer'in gizli katman genisligi
 
 # ---------------------------------------------------------------- gozlem boyutu
-OBS_CHANNELS = 5               # own, other, goal, forbidden, own_visited
-N_SCALARS = 4                  # agent_id, phase, t/max, kalan_manhattan/max
-OBS_DIM = OBS_CHANNELS * GRID_N * GRID_N + N_SCALARS      # 129
+# BUYUK GRID NOTU (100x100): tam-grid one-hot kanal (5x100x100=50.000 float,
+# %99.99'u sifir) HEM bellek acisindan felaket (replay buffer 300k transition
+# icin 56 GB istiyordu) HEM ogrenme acisindan verimsiz (ag neredeyse tamami
+# sifir olan bir girdiden anlam cikarmak zorunda). Cozum: ajan SADECE kendi
+# YEREL penceresini (PATCH_RADIUS yaricapinda) gorsun + hedefe/diger ajana
+# GORELI yon vektorlerini skaler olarak alsin. Bu, buyuk grid navigasyonunda
+# standart yaklasimdir ve "100x100'de pathfinding nasil olacak" sorusunun
+# dogrudan cevabidir: ajan butun gridi degil, cevresini + yonu gorur.
+PATCH_RADIUS = 10              # pencere boyutu = (2*10+1)^2 = 21x21
+PATCH_SIZE = 2 * PATCH_RADIUS + 1
 
-STATE_CHANNELS = 4             # pos1, pos2, goal, forbidden
-STATE_SCALARS = 2              # phase, t/max
-STATE_DIM = STATE_CHANNELS * GRID_N * GRID_N + STATE_SCALARS   # 102
+OBS_CHANNELS = 2                # yerel: [yasak_bolge, kendi_izi]
+N_SCALARS = 11                  # agent_id, faz, t/max, own_row, own_col,
+                                # dx_hedef, dy_hedef, dist_hedef, dx_diger,
+                                # dy_diger, dist_diger  (hepsi normalize)
+OBS_DIM = OBS_CHANNELS * PATCH_SIZE * PATCH_SIZE + N_SCALARS   # 893
+
+STATE_CHANNELS = 2              # yerel: [A1 cevresi yasak-bolge, A2 cevresi yasak-bolge]
+STATE_SCALARS = 8               # A1_row,A1_col,A2_row,A2_col,goal_row,goal_col,faz,t/max
+STATE_DIM = STATE_CHANNELS * PATCH_SIZE * PATCH_SIZE + STATE_SCALARS   # 890
+
+# ---------------------------------------------------------------- ag mimarisi
+# Patch kucuk oldugu icin (21x21) agir bir downsample gerekmiyor — 2 conv
+# katmani + kucuk bir AdaptiveAvgPool yeterli. Kanal/havuz boyutu PATCH_SIZE'dan
+# bagimsiz (NxN / patch-boyutu genellemesi icin onemli).
+CNN_CHANNELS = (16, 32)
+CNN_POOL_SIZE = 4
 
 # ---------------------------------------------------------------- yollar
 RUNS_DIR = "runs"

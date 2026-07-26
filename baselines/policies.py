@@ -8,7 +8,8 @@ Onemli ayrim: "rastgele politika" iki farkli sey olabilir.
 """
 import numpy as np
 
-from baselines.bfs_oracle import all_shortest_paths, bfs_path, oracle
+from baselines.bfs_oracle import (bfs_path, oracle,
+                                  sample_random_monotonic_path)
 from config import AGENT_1, AGENT_2, DIRS, NOOP
 
 
@@ -48,12 +49,12 @@ class ScriptedPolicy:
 
 
 def random_shortest_policy(rng=None) -> ScriptedPolicy:
-    """A1: optimal yollarindan uniform rastgele biri. A2: BFS."""
+    """A1: optimal yollarindan uniform rastgele biri (enumerate ETMEDEN,
+    buyuk N'de de calisir — bkz. sample_random_monotonic_path). A2: BFS."""
     rng = rng or np.random.default_rng()
 
     def pick(env):
-        paths = all_shortest_paths(env.s1, env.goal)
-        return paths[int(rng.integers(0, len(paths)))]
+        return sample_random_monotonic_path(env.s1, env.goal, rng)
 
     return ScriptedPolicy(pick, rng=rng)
 

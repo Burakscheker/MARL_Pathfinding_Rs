@@ -45,11 +45,11 @@ Testler:
 | 2 BFS oracle `baselines/` | ✅ |
 | 3 Tek ajan DQN | ✅ (600/600 optimal, gap 0.0) |
 | 4 IQL baseline | ✅ (zarar %12.9, baseline-seviyesinde çakılı — bkz. altta) |
-| 5 VDN | 🔲 |
-| 6 Curriculum | 🔲 |
-| 7 QMIX | 🔲 |
-| 8 Değerlendirme | 🔲 |
-| 9 Görselleştirme | 🔲 |
+| 5 VDN `agents/vdn.py` | 🟡 kod tamam (ayrı-ağ mimarisi, bkz. altta), final koşu bekleniyor |
+| 6 Curriculum `env/sampler.py` | 🟡 kod tamam, ölçüm net kazanç göstermedi (bkz. PLAN §Aşama 6) |
+| 7 QMIX `agents/qmix.py` | 🟡 kod tamam, final koşu bekleniyor |
+| 8 Değerlendirme `eval/evaluate.py` | 🟡 kod tamam, tüm algoritmalar için final koşu bekleniyor |
+| 9 Görselleştirme `viz/plot_iql_report.py` | 🟡 kod tamam |
 
 ## Tek ajan DQN (Aşama 3)
 
@@ -84,6 +84,42 @@ adım, ayrı bir DQN LR'i 1e-4'e düşürüldü) — detay PLAN.md §Aşama 3.
 A1'e A2'nin akıbetine dair hiçbir sinyal ödül fonksiyonunda yok, bu yüzden
 zarar oranı random-shortest baseline'ıyla aynı seviyede kalıyor. "VDN neden
 gerekli" sorusunun ölçülmüş cevabı — detay PLAN.md §Aşama 4.
+
+## VDN (Aşama 5) ve Curriculum (Aşama 6)
+
+```bash
+.venv\Scripts\python.exe train.py --algo vdn --episodes 15000 --tag vdn_final --curriculum
+```
+
+`agents/vdn.py`: her ajan için **ayrı** Q ağı (paylaşımlı tek ağ ep~1750'de
+öğrenip çöküyordu — detay dosya docstring'inde ve PLAN.md §Aşama 5'te),
+tek TD hedefi (`Q_tot = Q_1+Q_2`) golge NOOP ile ikisine birden geri yayılıyor.
+`--curriculum` bayrağı `env/sampler.py`'deki zorluk-ağırlıklı örneklemeyi açar.
+
+Otomatik olarak üretir: `runs/{tag}_train_log.csv` (seyrek, deterministik eval),
+`runs/{tag}_train_harm.csv` (yoğun, eğitim-içi), 10 deterministik gösterim
+episode'u + iki PNG (`runs/viz/{tag}_harm_curve.png`, `..._demo_grids.png`).
+
+## QMIX (Aşama 7)
+
+```bash
+.venv\Scripts\python.exe train.py --algo qmix --episodes 15000 --tag qmix_final --curriculum
+```
+
+`agents/qmix.py`: VDN'in toplamsal `Q_1+Q_2`'sini, `env.state()`'e koşullu
+monotonik bir hypernetwork mixer'a (`abs(W)` ile non-negatif ağırlıklar)
+çevirir. Per-ajan ağlar VDN'deki gibi yine ayrı.
+
+## Final karşılaştırma (Aşama 8-9)
+
+```bash
+.venv\Scripts\python.exe -m eval.evaluate --vdn-tag vdn_final --qmix-tag qmix_final
+.venv\Scripts\python.exe -m viz.plot_iql_report --final
+```
+
+İlki `runs/eval_report.md`'ye Random-shortest / Bencil BFS / Oracle / IQL /
+VDN / QMIX'i TAM 14.400 konfigde tek tabloda yazar; ikincisi zor alt-kümede
+üç öğrenen algoritmayı tek grafikte karşılaştırır.
 
 ## Ölçülmüş temel sayılar
 

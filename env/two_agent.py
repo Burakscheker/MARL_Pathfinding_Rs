@@ -117,3 +117,51 @@ def play_episode_vdn(env: MARLGridEnv, agent, train: bool,
         obs = next_obs
 
     return info, losses
+
+
+def play_episode_qmix(env: MARLGridEnv, agent, train: bool,
+                      config: Optional[tuple[Cell, Cell, Cell]] = None,
+                      health_probe: Optional[list] = None) -> tuple[dict, list]:
+    """QMIX icin ortak episode calistirici — PLAN §Asama 7.
+
+    play_episode_vdn ile TEK fark: her joint transition'a GLOBAL STATE
+    (env.state(), t ve t+1) DAHIL edilir — mixer'in hypernetwork'u agirliklarini
+    bu state'ten uretir. Geri kalan (golge NOOP, faz-siniri-farkinda olmayan
+    tek dongu, fiziksel maske) play_episode_vdn ile birebir ayni.
+    """
+    obs = env.reset(config=config)
+    done = False
+    losses: list = []
+    info: dict = {}
+
+    while not done:
+        active = env.active
+        passive = 1 - active
+        mask_active = env.action_mask(active)
+        eps = None if train else 0.0
+        a_active = agent.act(active, obs[active], mask_active, eps=eps)
+
+        if health_probe is not None and env.phase == 0:
+            health_probe.append(agent.q_value(passive, obs[passive], NOOP))
+
+        state = env.state()
+        next_obs, r_team, done, info = env.step(a_active)
+        next_state = env.state()
+        a1 = a_active if active == AGENT_1 else NOOP
+        a2 = a_active if active == AGENT_2 else NOOP
+
+        if train:
+            is_truncated = done and info.get("timeout", False)
+            push_done = done and not is_truncated
+            nm1 = env.physical_mask(AGENT_1)
+            nm2 = env.physical_mask(AGENT_2)
+            agent.push(obs[AGENT_1], a1, obs[AGENT_2], a2, r_team,
+                      next_obs[AGENT_1], next_obs[AGENT_2], push_done, nm1, nm2,
+                      state, next_state)
+            loss = agent.learn()
+            if loss is not None:
+                losses.append(loss)
+
+        obs = next_obs
+
+    return info, losses

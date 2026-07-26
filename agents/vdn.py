@@ -27,9 +27,9 @@ import numpy as np
 import torch
 import torch.nn as nn
 
-from agents.networks import MLP, masked_q
+from agents.networks import build_qnet, masked_q
 from config import (AGENT_1, AGENT_2, EPS_END, EPS_START, GAMMA, GRAD_CLIP,
-                    N_ACTIONS, OBS_DIM, VDN_BATCH, VDN_BUFFER,
+                    LEARN_EVERY, N_ACTIONS, OBS_DIM, VDN_BATCH, VDN_BUFFER,
                     VDN_EPS_DECAY_STEPS, VDN_LEARN_START, VDN_LR,
                     VDN_TARGET_UPDATE)
 
@@ -107,10 +107,10 @@ class VDNAgent:
         self.learn_start = learn_start
         self.target_update = target_update
 
-        self.online = {AGENT_1: MLP(obs_dim, n_actions).to(self.device),
-                       AGENT_2: MLP(obs_dim, n_actions).to(self.device)}
-        self.target = {AGENT_1: MLP(obs_dim, n_actions).to(self.device),
-                       AGENT_2: MLP(obs_dim, n_actions).to(self.device)}
+        self.online = {AGENT_1: build_qnet(n_actions).to(self.device),
+                       AGENT_2: build_qnet(n_actions).to(self.device)}
+        self.target = {AGENT_1: build_qnet(n_actions).to(self.device),
+                       AGENT_2: build_qnet(n_actions).to(self.device)}
         for a in (AGENT_1, AGENT_2):
             self.target[a].load_state_dict(self.online[a].state_dict())
             self.target[a].eval()
@@ -156,7 +156,7 @@ class VDNAgent:
         self.steps += 1
 
     def learn(self) -> float | None:
-        if len(self.buffer) < self.learn_start:
+        if len(self.buffer) < self.learn_start or self.steps % LEARN_EVERY != 0:
             return None
 
         (obs1, a1, obs2, a2, r, next_obs1, next_obs2, done,

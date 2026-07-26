@@ -18,11 +18,12 @@ from typing import Optional
 
 import numpy as np
 
-from baselines.bfs_oracle import bfs_dist, forbidden_from, manhattan, oracle
-from config import (AGENT_1, AGENT_2, ALLOW_SAME_START, DIRS, GRID_N,
+from baselines.bfs_oracle import bfs_dist, forbidden_from, manhattan
+from config import (AGENT_1, AGENT_2, ALLOW_SAME_START, DIRS, GAMMA, GRID_N,
                     MAX_STEPS_PER_PHASE, MAX_STEPS_TOTAL, NOOP, N_ACTIONS,
-                    OBS_DIM, R_AGENT_GOAL, R_BLOCKED, R_BOTH_GOAL, R_INVALID,
-                    R_OPT_GAP, R_STEP, R_TIMEOUT, STATE_DIM)
+                    OBS_DIM, PATCH_RADIUS, R_AGENT_GOAL, R_BLOCKED,
+                    R_BOTH_GOAL, R_INVALID, R_OPT_GAP, R_STEP, R_TIMEOUT,
+                    SHAPING_COEF, STATE_DIM)
 
 Cell = tuple[int, int]
 
@@ -136,24 +137,46 @@ class MARLGridEnv:
 
     # ------------------------------------------------------------ gozlem
 
+    def _local_patch(self, center: Cell, cell_set, radius: int,
+                     oob_value: float = 0.0) -> np.ndarray:
+        """center etrafinda (2*radius+1)^2 boyutunda yerel pencere.
+
+        BUYUK GRID TASARIMI: ajan butun gridi degil, SADECE cevresini gorur
+        (bkz. config.py'nin OBS_CHANNELS notu). Sinir disi hucreler icin
+        oob_value kullanilir — yasak-bolge kanalinda 1.0 (duvar gibi davran,
+        agan zaten oraya gidemez), izin kanalinda 0.0 (anlamsiz, ziyaret
+        edilmemis sayilir).
+        """
+        r0, c0 = center
+        size = 2 * radius + 1
+        patch = np.full((size, size), oob_value, dtype=np.float32)
+        for dr in range(-radius, radius + 1):
+            rr = r0 + dr
+            if not (0 <= rr < self.n):
+                continue
+            for dc in range(-radius, radius + 1):
+                cc = c0 + dc
+                if 0 <= cc < self.n and (rr, cc) in cell_set:
+                    patch[dr + radius, dc + radius] = 1.0
+        return patch
+
     def observe(self, agent: int) -> np.ndarray:
         n = self.n
-        ch = np.zeros((5, n, n), dtype=np.float32)
         own, other = self.pos[agent], self.pos[1 - agent]
-        ch[0][own] = 1.0                      # kendi konumu
-        ch[1][other] = 1.0                    # diger ajanin konumu
-        ch[2][self.goal] = 1.0                # ortak hedef
-        for c in self.forbidden_view():       # yasak bolge (FAZ A'da buyuyor)
-            ch[3][c] = 1.0
-        for c in self.visited[agent]:         # kendi izi
-            ch[4][c] = 1.0
+        forb_patch = self._local_patch(own, self.forbidden_view(), PATCH_RADIUS, 1.0)
+        visited_patch = self._local_patch(own, self.visited[agent], PATCH_RADIUS, 0.0)
+        ch = np.stack([forb_patch, visited_patch])
 
         max_man = 2 * (n - 1)
         scalars = np.array([
             float(agent),
             float(self.phase),
             self.t / self.max_steps_total,
+            own[0] / n, own[1] / n,
+            (self.goal[0] - own[0]) / n, (self.goal[1] - own[1]) / n,
             manhattan(own, self.goal) / max_man,
+            (other[0] - own[0]) / n, (other[1] - own[1]) / n,
+            manhattan(own, other) / max_man,
         ], dtype=np.float32)
         return np.concatenate([ch.ravel(), scalars])
 
@@ -161,16 +184,20 @@ class MARLGridEnv:
         return {AGENT_1: self.observe(AGENT_1), AGENT_2: self.observe(AGENT_2)}
 
     def state(self) -> np.ndarray:
-        """QMIX mixer icin merkezi global state."""
+        """QMIX mixer icin: A1 ve A2'nin KENDI cevrelerindeki yasak-bolge
+        penceresi + pozisyon skalarlari (tam-grid one-hot DEGIL, ayni buyuk-N
+        gerekcesi — bkz. observe())."""
         n = self.n
-        ch = np.zeros((4, n, n), dtype=np.float32)
-        ch[0][self.pos[AGENT_1]] = 1.0
-        ch[1][self.pos[AGENT_2]] = 1.0
-        ch[2][self.goal] = 1.0
-        for c in self.forbidden_view():
-            ch[3][c] = 1.0
-        scalars = np.array([float(self.phase), self.t / self.max_steps_total],
-                           dtype=np.float32)
+        forb = self.forbidden_view()
+        patch1 = self._local_patch(self.pos[AGENT_1], forb, PATCH_RADIUS, 1.0)
+        patch2 = self._local_patch(self.pos[AGENT_2], forb, PATCH_RADIUS, 1.0)
+        ch = np.stack([patch1, patch2])
+        scalars = np.array([
+            self.pos[AGENT_1][0] / n, self.pos[AGENT_1][1] / n,
+            self.pos[AGENT_2][0] / n, self.pos[AGENT_2][1] / n,
+            self.goal[0] / n, self.goal[1] / n,
+            float(self.phase), self.t / self.max_steps_total,
+        ], dtype=np.float32)
         return np.concatenate([ch.ravel(), scalars])
 
     # -------------------------------------------------------------- step
@@ -187,6 +214,7 @@ class MARLGridEnv:
         agent = self.active
         a = actions if isinstance(actions, (int, np.integer)) else actions[agent]
         a = int(a)
+        pos_before = self.pos[agent]
 
         r_team = R_STEP
         r_ind = {AGENT_1: 0.0, AGENT_2: 0.0}
@@ -215,6 +243,23 @@ class MARLGridEnv:
             self.pos[agent] = moved_to
             self.path[agent].append(moved_to)
             self.visited[agent].add(moved_to)
+
+        # --- potential-based reward shaping (Ng ve ark. 1999)
+        # Buyuk N'de (100x100) SEYREK terminal odul (sadece hedefe varinca)
+        # rastgele/az-egitilmis bir politikayla neredeyse hic yakalanmaz —
+        # duzlemde rastgele yurusun hedefe beklenen varis suresi N ile
+        # karesel buyur. Bu terim HER ADIMDA hedefe yaklasma/uzaklasmaya
+        # orantili yogun bir sinyal verir. Kanitlanmis ozellik: optimal
+        # politikayi DEGISTIRMEZ (sadece ayni optimumu daha hizli buldurur),
+        # cunku r' = r + gamma*Phi(s')-Phi(s) bicimindeki HERHANGI bir Phi
+        # icin butun politikalarin deger sirasi korunur.
+        max_man = 2 * (self.n - 1)
+        if max_man > 0:
+            phi_before = -manhattan(pos_before, self.goal) / max_man
+            phi_after = -manhattan(self.pos[agent], self.goal) / max_man
+            shaping = SHAPING_COEF * (GAMMA * phi_after - phi_before)
+            r_team += shaping
+            r_ind[agent] += shaping
 
         self.t += 1
         self.phase_t += 1
@@ -258,40 +303,54 @@ class MARLGridEnv:
         return 0.0
 
     def _finish(self, info: dict) -> float:
-        """A2 hedefe vardi: optimallik cezasini ORACLE'a gore yaz (PLAN §5 kural 1)."""
+        """A2 hedefe vardi: optimallik cezasini SERBEST Manhattan'a gore yaz.
+
+        BUYUK GRID NOTU (100x100): 5x5'te bu ceza `oracle()`'in TUM optimal
+        A1 yollarini enumerate edip bulduğu EN IYI erisilebilir A2 uzunluguna
+        gore yaziliyordu (`all_shortest_paths` — C(8,4)=70 yol). 100x100'de
+        kose-kose C(198,99) yol var (enumerate edilemez, pratik olarak
+        sonsuz). O yuzden buyuk N'de karsilastirma serbest/engelsiz mesafeye
+        (`manhattan(s2,goal)`) gore yapiliyor — 5x5'te bu iki olcut %98.1
+        oranla zaten AYNIYDI (§0.2), sadece A1'in TEK yolu oldugu nadir
+        durumlarda (o zaman zaten secim sansi yok) farklilasiyordu. BFS
+        tabanli KILITLEME kontrolu (`_close_phase_a`) etkilenmedi — o zaten
+        O(n²) ve enumerate GEREKTIRMIYORDU.
+        """
         self.done = True
-        orc = oracle(self.s1, self.s2, self.goal)
         len2 = len(self.path[AGENT_2]) - 1
-        # ORACLE'a gore olc, serbest Manhattan'a gore DEGIL: 280 konfigde A1'in
-        # alternatifi yok, oralarda serbest mesafeye gore ceza yazmak ajani
-        # imkansiz bir sey icin cezalandirir.
-        gap2 = max(0, len2 - (orc.best_len2 if orc.best_len2 is not None else len2))
+        free_len2 = manhattan(self.s2, self.goal)
+        gap2 = max(0, len2 - free_len2)
         return R_OPT_GAP * gap2
 
     def _terminal_info(self) -> dict:
-        orc = oracle(self.s1, self.s2, self.goal)
         len1 = len(self.path[AGENT_1]) - 1
         len2 = len(self.path[AGENT_2]) - 1
         reached1 = self.pos[AGENT_1] == self.goal
         reached2 = self.pos[AGENT_2] == self.goal
+        opt1 = manhattan(self.s1, self.goal)
+        free_len2 = manhattan(self.s2, self.goal)
+        max_man = 2 * (self.n - 1)
+        # Zorluk etiketi artik ENUMERATE ETMEDEN, basit bir mesafe esigiyle
+        # (PLAN §0.4'un ampirik bulgusu: zorluk d1 buyudukce artiyor). Kesin
+        # degil ama enumerate gerektirmez, curriculum agirliklandirmasi icin
+        # yeterli bir yaklasik deger.
+        is_hard = bool(max_man > 0 and opt1 / max_man >= 0.6)
         return {
             "config": (self.s1, self.s2, self.goal),
             "success": bool(reached1 and reached2),
             "blocked": self._blocked,
-            # A1 optimal oynasaydi da kilitlenir miydi? False ise suc A1'in.
-            "block_unavoidable": self._blocked and orc.best_len2 is None,
             "timeout": self._timeout,
             "len1": len1, "len2": len2 if reached2 else None,
-            "gap1": len1 - orc.len1 if reached1 else None,
-            "gap2": (len2 - orc.best_len2) if (reached2 and orc.best_len2 is not None) else None,
+            "gap1": len1 - opt1 if reached1 else None,
+            "gap2": (len2 - free_len2) if reached2 else None,
             # A2 serbest optimumundan sapti mi? Kilitlemeden cok daha SIK olan
             # ve asil ogrenme sinyalini tasiyan olcut (bkz. PLAN §0.3).
-            "detoured": bool(reached2 and len2 > orc.free_len2),
-            "harmed": bool(self._blocked or (reached2 and len2 > orc.free_len2)),
-            "oracle_len1": orc.len1,
-            "oracle_len2": orc.best_len2,
-            "free_len2": orc.free_len2,
-            "is_hard": orc.is_hard,
+            "detoured": bool(reached2 and len2 > free_len2),
+            "harmed": bool(self._blocked or (reached2 and len2 > free_len2)),
+            "oracle_len1": opt1,
+            "oracle_len2": free_len2,   # buyuk N'de free_len2 ile ayni (yukaridaki not)
+            "free_len2": free_len2,
+            "is_hard": is_hard,
             "invalid": dict(self.invalid_count),
             "path1": tuple(self.path[AGENT_1]),
             "path2": tuple(self.path[AGENT_2]),

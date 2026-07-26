@@ -10,10 +10,10 @@ import torch
 import torch.nn as nn
 
 from agents.buffer import ReplayBuffer
-from agents.networks import MLP, masked_q
+from agents.networks import build_qnet, masked_q
 from config import (DQN_BATCH, DQN_BUFFER, DQN_EPS_DECAY_STEPS, DQN_LR,
                     DQN_LEARN_START, DQN_TARGET_UPDATE, EPS_END, EPS_START,
-                    GAMMA, GRAD_CLIP, N_ACTIONS, OBS_DIM)
+                    GAMMA, GRAD_CLIP, LEARN_EVERY, N_ACTIONS, OBS_DIM)
 
 
 class DQNAgent:
@@ -41,8 +41,8 @@ class DQNAgent:
         self.learn_start = learn_start
         self.target_update = target_update
 
-        self.online = MLP(obs_dim, n_actions).to(self.device)
-        self.target = MLP(obs_dim, n_actions).to(self.device)
+        self.online = build_qnet(n_actions).to(self.device)
+        self.target = build_qnet(n_actions).to(self.device)
         self.target.load_state_dict(self.online.state_dict())
         self.target.eval()
 
@@ -78,7 +78,7 @@ class DQNAgent:
         self.steps += 1
 
     def learn(self) -> float | None:
-        if len(self.buffer) < self.learn_start:
+        if len(self.buffer) < self.learn_start or self.steps % LEARN_EVERY != 0:
             return None
 
         obs, action, reward, next_obs, done, next_mask = self.buffer.sample(self.batch_size)
