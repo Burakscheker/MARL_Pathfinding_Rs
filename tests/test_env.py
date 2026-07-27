@@ -23,8 +23,10 @@ def _run(env, policy, config=None, seed=None):
 def test_shapes_and_masks():
     env = MARLGridEnv(seed=0)
     obs = env.reset(config=((0, 0), (4, 0), (4, 4)))
-    assert obs[AGENT_1].shape == (OBS_DIM,) == (129,)
-    assert env.state().shape == (STATE_DIM,) == (102,)
+    # Boyutlar GRID_N'e degil PATCH_SIZE'a bagli (yerel-pencere gozlem) —
+    # 5x5 doneminden kalma sabit 129/102 degerleri artik gecerli degil.
+    assert obs[AGENT_1].shape == (OBS_DIM,)
+    assert env.state().shape == (STATE_DIM,)
 
     # FAZ A: aktif = A1 (NOOP kapali), pasif = A2 (SADECE NOOP)
     m1, m2 = env.action_mask(AGENT_1), env.action_mask(AGENT_2)
@@ -97,7 +99,13 @@ def test_phase_transition_and_early_stop():
 
 
 def test_timeout():
-    """Faz basina adim limiti calisiyor."""
+    """Faz basina adim limiti calisiyor.
+
+    YENI SOZLESME: A1 FAZ A'yi hedefe varmadan tuketirse episode ARTIK BITMEZ.
+    Yasak bolge A1'in KISMI izinden sabitlenir ve A2 yine de oynar. Eski
+    davranista (episode hemen biterdi) A2, A1 basarisiz oldugu her episode'da
+    tek bir egitim adimi bile goremiyordu.
+    """
     env = MARLGridEnv(seed=3)
     env.reset(config=((0, 0), (0, 0), (4, 4)))
     done = False
@@ -105,7 +113,9 @@ def test_timeout():
     while not done:                      # sag-sol gidip gel, hedefe hic varma
         _, _, done, info = env.step(RIGHT if steps % 2 == 0 else LEFT)
         steps += 1
-    assert steps == MAX_STEPS_PER_PHASE and info["timeout"], (steps, info)
+    assert info["timeout"] and info["timeout1"], info
+    assert steps > MAX_STEPS_PER_PHASE, (
+        f"FAZ A timeout'unda episode bitmis, A2 hic oynayamamis (steps={steps})")
     print("  test_timeout OK")
 
 

@@ -35,10 +35,23 @@ ALLOW_SAME_START = True
 # ---------------------------------------------------------------- odul (PLAN §5)
 R_STEP = -0.05        # her timestep
 R_INVALID = -0.10     # duvara / yasak hucreye hamle (ajan yerinde kalir)
-R_AGENT_GOAL = +1.0   # bir ajan hedefe vardi (ara terminal)
-R_BOTH_GOAL = +3.0    # ikisi de vardi (takim hedefi)
+R_AGENT_GOAL = +10.0  # bir ajan hedefe vardi (ara terminal)
+R_BOTH_GOAL = +30.0   # ikisi de vardi (takim hedefi)
 R_BLOCKED = -3.0      # A2 kilitlendi — faz sinirinda BFS ile tespit
-R_TIMEOUT = -3.0      # herhangi bir fazda max_steps asildi
+R_TIMEOUT = -10.0     # herhangi bir fazda max_steps asildi
+# OLCEK NOTU: bir ara denemede bunlar 50/300'e cikarilmisti (hedefe varmayi
+# daha cok "motive etsin" diye). QMIX o kosuda basari oranini ep2500'de %6.5'e
+# cikarip epsilon tabana indigi ANDA %0'a cokturdu — config.py'de VDN icin
+# zaten belgelenmis olan olcek-kaynakli cokme imzasi (LR=3e-5 ile ~350
+# buyuklugunde Q degeri temsil etmek kirilgan). 10/30 ayni sirlamayi ve
+# "hedefe varmak cok degerli" niyetini korur, kanitlanmis stabil olcege yakin
+# kalir. Asil "hedefe git" sinyalini zaten SHAPING_COEF tasiyor.
+R_REVISIT = -0.05     # kendi fazinda DAHA ONCE ugradigi bir hucreye geri donus.
+                      # -0.20 degil: A2 yasak bolgeyi DOLASMAK icin cogu zaman
+                      # MECBUREN geri adim atar (elle yazilmis greedy politika
+                      # tam bu yuzden A2'de %76'da kaldi) — sert bir revisit
+                      # cezasi A2'yi dogrudan sakatliyor. Gitgel'i zaten
+                      # guclendirilmis shaping cezalandiriyor.
 # Katsayi: R_OPT_GAP * (len2 - ORACLE(s1,s2,g)).
 # Tarama sonucu (baselines/scan.py): random-shortest A1 altinda A2'nin
 # KILITLENME olasiligi sadece %0.82, ama UZAMA olasiligi %13.3. Yani asil
@@ -47,13 +60,23 @@ R_TIMEOUT = -3.0      # herhangi bir fazda max_steps asildi
 R_OPT_GAP = -0.50
 
 # Potential-based reward shaping katsayisi (Ng ve ark. 1999) — grid_env.py
-# step()'te uygulanir: r' = r + COEF*(gamma*Phi(s')-Phi(s)), Phi(s)=-manhattan/max.
-# 100x100'de SEYREK terminal odulun rastgele/az-egitilmis politikayla neredeyse
+# step()'te uygulanir: r' = r + COEF*(gamma*Phi(s')-Phi(s)),
+# Phi(s) = 1 - manhattan(s,goal)/max_man  (0 = en uzak, 1 = hedefte).
+# 50x50'de SEYREK terminal odulun rastgele/az-egitilmis politikayla neredeyse
 # hic yakalanamamasi sorununu cozer (duzlemde rastgele yurusun hedefe varis
 # suresi N ile karesel buyur) — HER ADIMDA hedefe yaklasma/uzaklasmaya
 # orantili yogun sinyal ekler. Optimal politikayi degistirmedigi KANITLANMIS
-# (herhangi bir Phi icin policy-invariance garantisi).
-SHAPING_COEF = 1.0
+# (herhangi bir Phi ve herhangi bir KATSAYI icin policy-invariance garantisi).
+#
+# 1.0 -> 20.0 GEREKCESI (olculdu): COEF=1'de hedefe dogru bir adimin yon
+# sinyali sadece ~+0.015'ti; R_STEP(-0.05) 3x, R_INVALID(-0.10) 7x,
+# R_REVISIT(-0.20) 13x daha buyuktu. Yani ajanin duydugu EN ZAYIF sinyal
+# "hedefe git" olani oluyordu ve ajan hedefi bulamadan 140 adimi tuketiyordu
+# (demo gorsellerinde len1=140 timeout'lari). Elle yazilmis greedy politika
+# AYNI ortamda 300/300 optimal cikti — yani ortam saglamdi, sorun sinyal
+# gucundeydi. COEF=20'de yon sinyali ~±0.3'e cikar, diger terimlerin ustune
+# gecer.
+SHAPING_COEF = 20.0
 
 # ---------------------------------------------------------------- egitim (ortak)
 SEED = 0
@@ -103,7 +126,7 @@ P_HARD_START, P_HARD_END, P_HARD_CAP = 0.20, 0.80, 0.80
 IQL_EPISODES = 3_000
 IQL_BUFFER = 100_000           # transition, ajan basina (bellek: ~15.6GB RAM'e gore ayarlandi)
 IQL_BATCH = 32
-IQL_EPS_DECAY_STEPS = 40_000   # adim, ajan basina
+IQL_EPS_DECAY_STEPS = 130_000  # adim, ajan basina (5000 episode'lik run'da ep~2500'de tabana inecek sekilde olceklendi)
 IQL_LEARN_START = 1_000
 IQL_LR = 1e-4
 IQL_TARGET_UPDATE = 2_000      # adim
@@ -139,7 +162,7 @@ VDN_BATCH = 32
 # 2-hucreli bir Q-salinimina (asagi/yukari sonsuz dongu) kilitlenip kacamadi
 # (reached1_frac sadece %17.1 cikti). 80_000, VDN'in episode-basina decay
 # hizini IQL'inkiyle YAKLASIK esitler.
-VDN_EPS_DECAY_STEPS = 80_000   # adim (paylasilan agin GLOBAL adim sayaci)
+VDN_EPS_DECAY_STEPS = 280_000  # adim (paylasilan agin GLOBAL adim sayaci; 5000 episode'lik run'da ep~2500'de tabana inecek sekilde olceklendi)
 VDN_LEARN_START = 1_000
 # DIKKAT: ilk denemede DQN_LR (1e-4) + DQN_TARGET_UPDATE (2000) ile VDN
 # ep~1750 civarinda (A1-yalniz 600 ciftlik izole navigasyon testinde 237/600)
@@ -166,7 +189,7 @@ VDN_EVAL_EVERY = 500
 QMIX_EPISODES = 3_000
 QMIX_BUFFER = 100_000           # state/next_state ekstra yer kapladigi icin VDN'den kucuk
 QMIX_BATCH = 32
-QMIX_EPS_DECAY_STEPS = 80_000
+QMIX_EPS_DECAY_STEPS = 280_000  # 5000 episode'lik run'da ep~2500'de tabana inecek sekilde olceklendi (VDN ile ayni gerekce)
 QMIX_LEARN_START = 1_000
 QMIX_LR = 3e-5
 QMIX_TARGET_UPDATE = 4_000

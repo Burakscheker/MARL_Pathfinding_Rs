@@ -47,7 +47,11 @@ def play_episode(env: MARLGridEnv, agents: dict, train: bool,
             # gercek terminal degil, deger 0 degildir, bootstrap gerekir.
             # (info["timeout"] sadece done=True'da set edilir; agent zaten
             # o an aktif oldugu icin baska ajanin timeout'uyla karismaz.)
-            is_truncated = done and info.get("timeout", False)
+            # phase_timeout: A1 sureyi doldurdu ama episode DEVAM ediyor (A2
+            # oynasin diye) — done=False oldugundan info["timeout"] burada
+            # yok, ama A1 acisindan bu da bir kesilmedir, terminal degil.
+            is_truncated = (done and info.get("timeout", False)) \
+                or info.get("phase_timeout", False)
             push_done = own_done and not is_truncated
             next_mask = (env.action_mask(agent) if push_done
                         else env.physical_mask(agent))

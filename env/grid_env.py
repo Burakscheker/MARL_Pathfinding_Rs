@@ -22,8 +22,8 @@ from baselines.bfs_oracle import bfs_dist, forbidden_from, manhattan
 from config import (AGENT_1, AGENT_2, ALLOW_SAME_START, DIRS, GAMMA, GRID_N,
                     MAX_STEPS_PER_PHASE, MAX_STEPS_TOTAL, NOOP, N_ACTIONS,
                     OBS_DIM, PATCH_RADIUS, R_AGENT_GOAL, R_BLOCKED,
-                    R_BOTH_GOAL, R_INVALID, R_OPT_GAP, R_STEP, R_TIMEOUT,
-                    SHAPING_COEF, STATE_DIM)
+                    R_BOTH_GOAL, R_INVALID, R_OPT_GAP, R_REVISIT, R_STEP,
+                    R_TIMEOUT, SHAPING_COEF, STATE_DIM)
 
 Cell = tuple[int, int]
 
@@ -83,6 +83,7 @@ class MARLGridEnv:
         self.invalid_count = {AGENT_1: 0, AGENT_2: 0}
         self._blocked = False
         self._timeout = False
+        self._timeout1 = False    # A1 FAZ A'yi hedefe varmadan tuketti mi
         return self.observations()
 
     # ------------------------------------------------------- yardimcilar
@@ -238,6 +239,11 @@ class MARLGridEnv:
                 self.invalid_count[agent] += 1
             else:
                 moved_to = nxt
+                if nxt in self.visited[agent]:
+                    # gitgel/dongu: bu fazda daha once ugranmis bir hucreye
+                    # geri donuyor — ilerlemeden salinim yapmayi cezalar.
+                    r_team += R_REVISIT
+                    r_ind[agent] += R_REVISIT
 
         if moved_to is not None:
             self.pos[agent] = moved_to
@@ -253,10 +259,16 @@ class MARLGridEnv:
         # politikayi DEGISTIRMEZ (sadece ayni optimumu daha hizli buldurur),
         # cunku r' = r + gamma*Phi(s')-Phi(s) bicimindeki HERHANGI bir Phi
         # icin butun politikalarin deger sirasi korunur.
+        # Phi NEGATIF OLMAYAN secildi (0 = en uzak, 1 = hedefte). Onceki
+        # Phi = -d/max_man biciminde, ajan YERINDE KALDIGINDA bile
+        # gamma*Phi - Phi = -0.01*Phi > 0 cikiyordu — yani hareketsizlik kucuk
+        # bir PRIM kazaniyordu (olculdu: +0.004). Negatif olmayan Phi'de ayni
+        # terim <= 0 olur, hareketsizlik prim kazanmaz. Iki bicim de gecerli
+        # potansiyeldir (optimal politikayi degistirmez), bu daha temizi.
         max_man = 2 * (self.n - 1)
         if max_man > 0:
-            phi_before = -manhattan(pos_before, self.goal) / max_man
-            phi_after = -manhattan(self.pos[agent], self.goal) / max_man
+            phi_before = 1.0 - manhattan(pos_before, self.goal) / max_man
+            phi_after = 1.0 - manhattan(self.pos[agent], self.goal) / max_man
             shaping = SHAPING_COEF * (GAMMA * phi_after - phi_before)
             r_team += shaping
             r_ind[agent] += shaping
@@ -271,13 +283,34 @@ class MARLGridEnv:
             r_ind[AGENT_1] += R_AGENT_GOAL
             r_team += self._close_phase_a(info)
         elif self.phase == 1 and self.pos[AGENT_2] == self.goal:
-            r_team += R_AGENT_GOAL + R_BOTH_GOAL
+            r_team += R_AGENT_GOAL
             r_ind[AGENT_2] += R_AGENT_GOAL
+            # "IKISI de vardi" bonusu sadece A1 GERCEKTEN vardiysa hak edilir.
+            # A1 timeout edip de faz B'ye gecildigi durumda (bkz. asagidaki
+            # timeout dali) takim bu bonusu almamali — yoksa A1'in basarisiz
+            # oldugu episode'lar da odullenir.
+            if not self._timeout1:
+                r_team += R_BOTH_GOAL
             r_team += self._finish(info)
         elif self.phase_t >= self.max_steps_per_phase:
             r_team += R_TIMEOUT
+            # Timeout, ajanin KENDI navigasyon basarisizligi (koordinasyon
+            # cezasi degil) — bu yuzden r_ind'e de yaziliyor, yoksa IQL'in
+            # ajanlari "sure doldu" sinyalini HIC gormuyordu.
+            r_ind[agent] += R_TIMEOUT
             self._timeout = True
-            self.done = True
+            if self.phase == 0:
+                # A1 hedefe VARAMADI. Eskiden episode burada tamamen biterdi,
+                # yani A2'nin sirasi HIC gelmiyordu: A1 basarisiz oldugu surece
+                # A2 tek bir egitim adimi bile goremiyordu (zincirin ilk halkasi
+                # kopuk). Artik yasak bolge A1'in KISMI izinden sabitlenip FAZ B
+                # yine de basliyor; A1'in basarisizligi _timeout1 ile ayrica
+                # kaydedildigi icin metrikler (reached1/gap1/success) bozulmuyor.
+                self._timeout1 = True
+                info["phase_timeout"] = True
+                r_team += self._close_phase_a(info)
+            else:
+                self.done = True
 
         if self.done:
             info.update(self._terminal_info())
@@ -285,7 +318,11 @@ class MARLGridEnv:
         return self.observations(), float(r_team), self.done, info
 
     def _close_phase_a(self, info: dict) -> float:
-        """A1 hedefe vardi: yasak bolgeyi sabitle, A2'nin fizibilitesini BFS ile kontrol et.
+        """FAZ A kapanisi: yasak bolgeyi sabitle, A2'nin fizibilitesini BFS ile kontrol et.
+
+        IKI durumda cagrilir: (a) A1 hedefe vardi, (b) A1 sureyi doldurdu
+        (timeout). (b)'de yasak bolge A1'in KISMI izinden olusur — A2 yine de
+        oynar ki egitim verisi toplayabilsin.
 
         Kilitliyse episode BURADA biter (PLAN §2.2 erken sonlandirma) — ceza
         A1'in hamlelerine gamma^T1 uzaklikta kalir, gamma^(T1+T2) degil.
@@ -340,6 +377,7 @@ class MARLGridEnv:
             "success": bool(reached1 and reached2),
             "blocked": self._blocked,
             "timeout": self._timeout,
+            "timeout1": self._timeout1,   # A1 FAZ A'yi hedefe varmadan tuketti
             "len1": len1, "len2": len2 if reached2 else None,
             "gap1": len1 - opt1 if reached1 else None,
             "gap2": (len2 - free_len2) if reached2 else None,

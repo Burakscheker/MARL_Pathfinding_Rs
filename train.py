@@ -240,8 +240,7 @@ def _make_iql_agent(seed: int) -> DQNAgent:
 
 def train_iql(episodes: int = IQL_EPISODES, seed: int = SEED,
               eval_every: int = IQL_EVAL_EVERY,
-              quick_eval_n: int = 200, tag: str = "iql",
-              curriculum: bool = False) -> dict:
+              quick_eval_n: int = 200, tag: str = "iql") -> dict:
     """Iki bagimsiz DQN, ortak odul YOK. PLAN §Asama 4.
 
     grid_env.py'deki info["r_ind"] zaten sadece step-cost + kendi hedef
@@ -254,12 +253,11 @@ def train_iql(episodes: int = IQL_EPISODES, seed: int = SEED,
     farkli episode sayisiyla ayri bir kosu yapacaksan (orn. gosterim/rapor
     icin) FARKLI bir tag ver, yoksa belgelenmis sonuclarin uzerine yazilir.
 
-    curriculum=True: PLAN §Asama 6 — bkz. train_vdn'deki ayni parametre.
+    Konfigler UNIFORM ornekleniyor (env.sample_config()) — zorluk-agirlikli
+    curriculum KALDIRILDI, bkz. train_vdn'deki ayni not.
     """
     env = MARLGridEnv(seed=seed)
     agents = {AGENT_1: _make_iql_agent(seed), AGENT_2: _make_iql_agent(seed + 1)}
-    sampler = (CurriculumSampler(seed=seed + 1, total_episodes=episodes)
-              if curriculum else None)
 
     all_configs, all_difficulty = load_all_configs()
     rng = np.random.default_rng(seed + 999)
@@ -291,7 +289,7 @@ def train_iql(episodes: int = IQL_EPISODES, seed: int = SEED,
 
     t0 = time.time()
     for ep in range(1, episodes + 1):
-        cfg = sampler.sample(ep) if sampler else None
+        cfg = None          # uniform ornekleme (curriculum kaldirildi)
         info, _ = play_episode(env, agents, train=True, config=cfg)
         harm_w.append(bool(info.get("harmed")))
         if info.get("is_hard"):
@@ -324,7 +322,9 @@ def train_iql(episodes: int = IQL_EPISODES, seed: int = SEED,
             }
             logger.writerow(row)
             log_file.flush()
-            print(f"  [ep {ep:6d}] A1-kotu {ev['gap1_bad']}/{quick_eval_n}"
+            print(f"  [ep {ep:6d}] eps1 {agents[AGENT_1].eps:.3f}"
+                  f"  eps2 {agents[AGENT_2].eps:.3f}"
+                  f"  A1-kotu {ev['gap1_bad']}/{quick_eval_n}"
                   f"  A2-gap {ev['mean_gap2']:+.3f}"
                   f"  kilit %{100*ev['block_rate']:.2f}"
                   f"  zarar %{100*ev['harm_rate']:.2f}"
@@ -473,8 +473,7 @@ def evaluate_vdn(agent: VDNAgent, env: MARLGridEnv, configs: list,
 
 def train_vdn(episodes: int = VDN_EPISODES, seed: int = SEED,
              eval_every: int = VDN_EVAL_EVERY,
-             quick_eval_n: int = 200, tag: str = "vdn",
-             curriculum: bool = False) -> dict:
+             quick_eval_n: int = 200, tag: str = "vdn") -> dict:
     """Paylasilan TEK Q-agi, golge NOOP ile baglanmis TEK TD hatasi. PLAN §Asama 5.
 
     IQL'den (train_iql) TEK mimari fark play_episode_vdn'de: HER t'de HER IKI
@@ -482,13 +481,14 @@ def train_vdn(episodes: int = VDN_EPISODES, seed: int = SEED,
     A1'in "kilitleme" hatasi artik A1'in gradyanina ULASIYOR — IQL'de
     ulasmiyordu (agents/dqn.py'nin push()'u pasif ajan icin hic cagrilmiyordu).
 
-    curriculum=True: PLAN §Asama 6 — config uniform env.sample_config() yerine
-    CurriculumSampler'dan gelir (zor konfig payi egitim boyunca %20->%80).
+    KONFIG ORNEKLEME: uniform (env.sample_config()) — her episode ayni zorluk
+    dagilimindan cekilir. Zorluk-agirlikli curriculum (zor konfig payini egitim
+    boyunca %20->%80 yukselten PLAN §Asama 6 mekanizmasi) KALDIRILDI: ajanin
+    hedefe varamadigi bir donemde gorevi giderek zorlastirmak, ayni anda
+    dusen epsilon'la birleserek cifte sikistirma yaratiyordu.
     """
     env = MARLGridEnv(seed=seed)
     agent = VDNAgent(seed=seed)
-    sampler = (CurriculumSampler(seed=seed + 1, total_episodes=episodes)
-              if curriculum else None)
 
     all_configs, all_difficulty = load_all_configs()
     rng = np.random.default_rng(seed + 999)
@@ -521,7 +521,7 @@ def train_vdn(episodes: int = VDN_EPISODES, seed: int = SEED,
         # episode'u yakalarsak 1 olcumle "SABIT" diye yanlis alarm veririz.
         # ep>=200'den itibaren en az 3 olcum toplayan ILK episode'u kullan.
         probe = [] if (not health_checked and ep >= 200) else None
-        cfg = sampler.sample(ep) if sampler else None
+        cfg = None          # uniform ornekleme (curriculum kaldirildi)
         info, _ = play_episode_vdn(env, agent, train=True, config=cfg, health_probe=probe)
 
         if probe is not None and len(probe) >= 3:
@@ -559,7 +559,8 @@ def train_vdn(episodes: int = VDN_EPISODES, seed: int = SEED,
             }
             logger.writerow(row)
             log_file.flush()
-            print(f"  [ep {ep:6d}] A1-kotu {ev['gap1_bad']}/{quick_eval_n}"
+            print(f"  [ep {ep:6d}] eps {agent.eps:.3f}"
+                  f"  A1-kotu {ev['gap1_bad']}/{quick_eval_n}"
                   f"  A2-gap {ev['mean_gap2']:+.3f}"
                   f"  kilit %{100*ev['block_rate']:.2f}"
                   f"  zarar %{100*ev['harm_rate']:.2f}"
@@ -628,17 +629,15 @@ def evaluate_qmix(agent: QMixAgent, env: MARLGridEnv, configs: list,
 
 def train_qmix(episodes: int = QMIX_EPISODES, seed: int = SEED,
               eval_every: int = QMIX_EVAL_EVERY,
-              quick_eval_n: int = 200, tag: str = "qmix",
-              curriculum: bool = False) -> dict:
+              quick_eval_n: int = 200, tag: str = "qmix") -> dict:
     """VDN'in ustune monotonik mixer. PLAN §Asama 7.
 
     train_vdn ile TEK fark play_episode_qmix'te: her joint transition'a
     global state (env.state()) eklenir, mixer agirliklarini bundan uretir.
+    Konfigler uniform ornekleniyor (curriculum kaldirildi, bkz. train_vdn).
     """
     env = MARLGridEnv(seed=seed)
     agent = QMixAgent(seed=seed)
-    sampler = (CurriculumSampler(seed=seed + 1, total_episodes=episodes)
-              if curriculum else None)
 
     all_configs, all_difficulty = load_all_configs()
     rng = np.random.default_rng(seed + 999)
@@ -668,7 +667,7 @@ def train_qmix(episodes: int = QMIX_EPISODES, seed: int = SEED,
     t0 = time.time()
     for ep in range(1, episodes + 1):
         probe = [] if (not health_checked and ep >= 200) else None
-        cfg = sampler.sample(ep) if sampler else None
+        cfg = None          # uniform ornekleme (curriculum kaldirildi)
         info, _ = play_episode_qmix(env, agent, train=True, config=cfg, health_probe=probe)
 
         if probe is not None and len(probe) >= 3:
@@ -705,7 +704,8 @@ def train_qmix(episodes: int = QMIX_EPISODES, seed: int = SEED,
             }
             logger.writerow(row)
             log_file.flush()
-            print(f"  [ep {ep:6d}] A1-kotu {ev['gap1_bad']}/{quick_eval_n}"
+            print(f"  [ep {ep:6d}] eps {agent.eps:.3f}"
+                  f"  A1-kotu {ev['gap1_bad']}/{quick_eval_n}"
                   f"  A2-gap {ev['mean_gap2']:+.3f}"
                   f"  kilit %{100*ev['block_rate']:.2f}"
                   f"  zarar %{100*ev['harm_rate']:.2f}"
@@ -737,8 +737,6 @@ if __name__ == "__main__":
                     help="cikti dosyalarinin oneki (varsayilan: --algo degeri)")
     p.add_argument("--no-demo", action="store_true",
                     help="iql/vdn icin: egitim sonrasi 10-episode gosterim+grafik adimini atla")
-    p.add_argument("--curriculum", action="store_true",
-                    help="iql/vdn icin: PLAN §Asama 6 zorluk-agirlikli config sampler'i ac")
     args = p.parse_args()
 
     if args.algo == "dqn":
@@ -748,10 +746,8 @@ if __name__ == "__main__":
     elif args.algo == "iql":
         episodes = args.episodes or IQL_EPISODES
         tag = args.tag or "iql"
-        print(f"=== IQL egitimi | {episodes} episode | seed {args.seed} | tag={tag}"
-              f" | curriculum={args.curriculum} ===")
-        result = train_iql(episodes=episodes, seed=args.seed, tag=tag,
-                           curriculum=args.curriculum)
+        print(f"=== IQL egitimi | {episodes} episode | seed {args.seed} | tag={tag} ===")
+        result = train_iql(episodes=episodes, seed=args.seed, tag=tag)
         if not args.no_demo:
             record_demo_episodes(result["agents"], tag=tag)
             from viz.plot_iql_report import plot_demo_grids, plot_harm_curve
@@ -761,10 +757,8 @@ if __name__ == "__main__":
     elif args.algo == "vdn":
         episodes = args.episodes or VDN_EPISODES
         tag = args.tag or "vdn"
-        print(f"=== VDN egitimi | {episodes} episode | seed {args.seed} | tag={tag}"
-              f" | curriculum={args.curriculum} ===")
-        result = train_vdn(episodes=episodes, seed=args.seed, tag=tag,
-                           curriculum=args.curriculum)
+        print(f"=== VDN egitimi | {episodes} episode | seed {args.seed} | tag={tag} ===")
+        result = train_vdn(episodes=episodes, seed=args.seed, tag=tag)
         if not args.no_demo:
             record_demo_episodes_vdn(result["agent"], tag=tag)
             from viz.plot_iql_report import plot_demo_grids, plot_harm_curve
@@ -774,10 +768,8 @@ if __name__ == "__main__":
     else:  # qmix
         episodes = args.episodes or QMIX_EPISODES
         tag = args.tag or "qmix"
-        print(f"=== QMIX egitimi | {episodes} episode | seed {args.seed} | tag={tag}"
-              f" | curriculum={args.curriculum} ===")
-        result = train_qmix(episodes=episodes, seed=args.seed, tag=tag,
-                           curriculum=args.curriculum)
+        print(f"=== QMIX egitimi | {episodes} episode | seed {args.seed} | tag={tag} ===")
+        result = train_qmix(episodes=episodes, seed=args.seed, tag=tag)
         if not args.no_demo:
             record_demo_episodes_qmix(result["agent"], tag=tag)
             from viz.plot_iql_report import plot_demo_grids, plot_harm_curve

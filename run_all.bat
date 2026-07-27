@@ -43,21 +43,23 @@ if exist runs\.vdn_done  del /q runs\.vdn_done
 if exist runs\.qmix_done del /q runs\.qmix_done
 
 echo [1/4] IQL, VDN, QMIX egitimleri PARALEL baslatiliyor...
-echo       (her biri kendi log dosyasina yaziyor, bu pencere serbest kalir)
+echo       (her biri kendi GORUNUR penceresinde canli ilerliyor)
 
 REM "&" (&& degil) kullaniliyor: egitim HATA ile de bitse marker dosyasi
 REM yine de yazilsin, yoksa asagidaki bekleme dongusu sonsuza kadar takilir.
+REM /B YOK ve dosyaya yonlendirme YOK -- her egitim KENDI gorunur cmd
+REM penceresinde acilir, ilerleme (episode/eps/zarar) o pencerede CANLI
+REM gorunur, log dosyasini tekrar tekrar acmaya gerek kalmaz. CSV loglar
+REM (runs\*_train_log.csv) zaten train.py icinden ayrica yaziliyor,
+REM bu degisiklikten etkilenmiyor.
 
-start "IQL egitimi"  /B cmd /c "%VENV% train.py --algo iql  --episodes %EPISODES% --tag iql_final  --curriculum --seed %SEED% > runs\iql_final_stdout.log  2>&1 & echo done > runs\.iql_done"
-start "VDN egitimi"  /B cmd /c "%VENV% train.py --algo vdn  --episodes %EPISODES% --tag vdn_final  --curriculum --seed %SEED% > runs\vdn_final_stdout.log  2>&1 & echo done > runs\.vdn_done"
-start "QMIX egitimi" /B cmd /c "%VENV% train.py --algo qmix --episodes %EPISODES% --tag qmix_final --curriculum --seed %SEED% > runs\qmix_final_stdout.log 2>&1 & echo done > runs\.qmix_done"
+start "IQL egitimi"  cmd /k "%VENV% train.py --algo iql  --episodes %EPISODES% --tag iql_final  --seed %SEED% & echo done > runs\.iql_done"
+start "VDN egitimi"  cmd /k "%VENV% train.py --algo vdn  --episodes %EPISODES% --tag vdn_final  --seed %SEED% & echo done > runs\.vdn_done"
+start "QMIX egitimi" cmd /k "%VENV% train.py --algo qmix --episodes %EPISODES% --tag qmix_final --seed %SEED% & echo done > runs\.qmix_done"
 
 echo.
 echo [2/4] Uc egitim de bitene kadar bekleniyor...
-echo       Ilerlemeyi ayri bir pencerede izlemek icin:
-echo         type runs\iql_final_stdout.log
-echo         type runs\vdn_final_stdout.log
-echo         type runs\qmix_final_stdout.log
+echo       Ilerlemeyi acilan 3 pencerede CANLI gorebilirsin (episode/eps/zarar).
 echo.
 
 set /a WAITED=0
