@@ -6,7 +6,7 @@ import numpy as np
 
 from baselines.policies import random_shortest_policy, random_walk_act
 from config import (AGENT_1, AGENT_2, DOWN, MAX_STEPS_PER_PHASE, NOOP,
-                    OBS_DIM, RIGHT, LEFT, STATE_DIM)
+                    OBS_DIM, PATCH_SIZE, RIGHT, LEFT, STATE_DIM)
 from env.grid_env import MARLGridEnv
 
 
@@ -74,8 +74,13 @@ def test_forbidden_respected():
 
 
 def test_phase_transition_and_early_stop():
-    """A1 hedefe varinca yasak bolge sabitlenir; kilitliyse episode HEMEN biter."""
-    env = MARLGridEnv(seed=2)
+    """A1 hedefe varinca yasak bolge sabitlenir; kilitliyse episode HEMEN biter.
+
+    KRITIK: asagidaki kilitleme senaryosu 5x5'in KOSE-DUVARLARINA dayanan
+    KANITLANMIS bir kapali-form kurali (bkz. tests/test_oracle.py'deki ayni
+    not) — GRID_N=50 varsayilaniyla A2 buyuk gridin acik alanindan dolasip
+    kilitlenmiyor, kural GECERSIZ gorunuyor. n=5 ACIKCA sabitleniyor."""
+    env = MARLGridEnv(seed=2, n=5)
     # PLAN §0.3 kapali form: ilk hamle = son hamle = ASAGI -> kilitler
     env.reset(config=((0, 0), (0, 0), (4, 4)))
     blocking = [DOWN, DOWN, DOWN, RIGHT, RIGHT, RIGHT, RIGHT, DOWN]
@@ -86,7 +91,10 @@ def test_phase_transition_and_early_stop():
     assert done and info["blocked"], info
     assert env.phase == 0, "kilitlenmede FAZ B'ye gecilmemeli"
     assert info["len2"] is None and not info["success"]
-    assert not info["block_unavoidable"], "bu konfigde A1'in iyi alternatifi vardi"
+    # NOT: "block_unavoidable" (A1'in TUM optimal yollarinin kilitleyip
+    # kilitlemedigi) buyuk-N refactor'unde _terminal_info()'dan KALDIRILDI —
+    # oracle()'in TUM yollari enumerate etmesini gerektiriyordu, tam da
+    # 50x50'de kaldirdigimiz maliyet. Artik hesaplanmiyor, test edilmiyor.
 
     # ayni konfig, kibar yol: D D D D R R R R -> A2 gidebilmeli
     env.reset(config=((0, 0), (0, 0), (4, 4)))
@@ -131,8 +139,13 @@ def test_passive_obs_updates():
         seen.append(env.observe(AGENT_2).copy())
     diffs = [not np.array_equal(seen[i], seen[i + 1]) for i in range(len(seen) - 1)]
     assert all(diffs), "FAZ A'da A2'nin gozlemi guncellenmiyor!"
-    # ozellikle yasak bolge kanali (3) buyumeli
-    forb_counts = [o[3 * 25:4 * 25].sum() for o in seen]
+    # yasak-bolge yamasi (kanal 0, ilk PATCH_SIZE^2 deger — bkz. observe()'un
+    # ch = np.stack([forb_patch, visited_patch]) sirasi) buyumeli. Eski
+    # o[3*25:4*25] tam-grid tek-hot doneminden kalmaydi (4 kanal x 25 hucre,
+    # 5x5), yerel-pencere gozleme (2 kanal x PATCH_SIZE^2 + skalar) gecince
+    # yanlis dilim haline geldi.
+    patch_cells = PATCH_SIZE * PATCH_SIZE
+    forb_counts = [o[:patch_cells].sum() for o in seen]
     assert forb_counts == sorted(forb_counts) and forb_counts[-1] > forb_counts[0]
     print("  test_passive_obs_updates OK")
 
@@ -157,8 +170,17 @@ def test_random_shortest_baseline(n_ep=20_000):
     beklenti: kilitlenme %0.82, A2'nin zarar gormesi (kilit VEYA uzama) %13.3.
     baselines/scan.py bu sayilari tam olarak hesapliyor; ortam onlari
     simulasyonla yeniden uretmeli.
-    """
-    env = MARLGridEnv(seed=7)
+
+    KRITIK: %0.82/%13.28 5x5 icin baselines/scan.py'nin TAM taramasindan
+    (14.400 konfig) turetildi — buyuk N'de (50x50) GEOMETRI FARKLI (A1'in
+    izi acik alana gore cok daha kucuk bir oran kaplar, forbidden-zone/grid
+    orani degisir), bu yuzden ayni yuzdeler GECERLI DEGIL — olculdu: GRID_N=50
+    varsayilaniyla kilitlenme %0.01'e dusuyor (beklenen %0.82'nin cok altinda)
+    ve nadiren (20000'de 2) A2'nin dolasmasi MAX_STEPS_PER_PHASE'i asip
+    timeout'a bile yol acabiliyor. n=5 ACIKCA sabitleniyor ki bu test
+    scan.py'nin turettigi ORIJINAL istatistigi dogrulasin, GRID_N ne olursa
+    olsun."""
+    env = MARLGridEnv(seed=7, n=5)
     pol = random_shortest_policy(np.random.default_rng(7))
     blocked = harmed = success = gap1_bad = 0
     for _ in range(n_ep):
@@ -189,4 +211,4 @@ if __name__ == "__main__":
     test_passive_obs_updates()
     test_random_walk_no_crash()
     test_random_shortest_baseline()
-    print("TUM ORTAM TESTLERI GECTI ✓")
+    print("TUM ORTAM TESTLERI GECTI")

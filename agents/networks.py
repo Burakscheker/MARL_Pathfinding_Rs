@@ -13,7 +13,7 @@ import torch
 import torch.nn as nn
 
 from config import (CNN_CHANNELS, CNN_POOL_SIZE, HIDDEN, N_ACTIONS, N_SCALARS,
-                    OBS_CHANNELS, PATCH_SIZE)
+                    OBS_CHANNELS, PATCH_SIZE, SCALAR_EMBED)
 
 
 class MLP(nn.Module):
@@ -46,11 +46,16 @@ class CNNQNet(nn.Module):
     icin 21->11->6), sonra AdaptiveAvgPool2d(pool_size) ile SABIT boyuta
     indirgenir — bu, parametre sayisini PATCH_SIZE'dan bagimsizlastirir VE
     kaba konumsal bilgiyi (global average pooling'in aksine) korur.
+
+    SKALAR DALI (bkz. config.py SCALAR_EMBED notu): skalarlar ham haliyle
+    CNN ciktisina eklenirse 523 girdinin 11'i olup kayboluyordu. Artik once
+    kucuk bir MLP ile genisletiliyor, HAM hali de skip olarak korunuyor.
     """
 
     def __init__(self, channels: int, grid_n: int, n_scalars: int, n_actions: int,
                  conv_channels: tuple[int, ...] = (16, 32, 32),
-                 pool_size: int = 6, hidden: int = HIDDEN):
+                 pool_size: int = 6, hidden: int = HIDDEN,
+                 scalar_embed: int = SCALAR_EMBED):
         super().__init__()
         self.channels = channels
         self.grid_n = grid_n
@@ -66,9 +71,15 @@ class CNNQNet(nn.Module):
         self.conv = nn.Sequential(*layers)
         self.pool = nn.AdaptiveAvgPool2d(pool_size)
 
+        self.scalar_enc = nn.Sequential(
+            nn.Linear(n_scalars, scalar_embed), nn.ReLU(),
+            nn.Linear(scalar_embed, scalar_embed), nn.ReLU(),
+        )
+
         flat_dim = in_c * pool_size * pool_size
         self.head = nn.Sequential(
-            nn.Linear(flat_dim + n_scalars, hidden), nn.ReLU(),
+            # + n_scalars: ham skalar skip baglantisi (dx/dy -> Q dogrudan yol)
+            nn.Linear(flat_dim + scalar_embed + n_scalars, hidden), nn.ReLU(),
             nn.Linear(hidden, hidden), nn.ReLU(),
             nn.Linear(hidden, n_actions),
         )
@@ -78,7 +89,7 @@ class CNNQNet(nn.Module):
         scalars = x[:, self.spatial_size:]
         h = self.conv(spatial)
         h = self.pool(h).flatten(1)
-        h = torch.cat([h, scalars], dim=1)
+        h = torch.cat([h, self.scalar_enc(scalars), scalars], dim=1)
         return self.head(h)
 
 

@@ -7,6 +7,7 @@ hesaplanabilir. Butun RL sonuclari buna gore olculur.
 from collections import deque
 from functools import lru_cache
 from itertools import combinations
+from math import comb
 from typing import NamedTuple, Optional
 
 from config import DIRS, GRID_N
@@ -105,6 +106,19 @@ def sample_random_monotonic_path(start: Cell, goal: Cell, rng) -> Path:
 
 # ------------------------------------------------- tum en kisa yollar (monoton)
 
+# C(dr+dc, dr) yol sayisi n_r~n_c (KOSEGEN) olunca PATLAR (100x100'de
+# C(198,99) ~ 10^58), ama DUZ CIZGIDE (n_r=0 veya n_c=0) mesafe ne olursa
+# olsun HEP 1 yoldur — o yuzden esik HAM MESAFEYE degil, GERCEK YOL SAYISINA
+# (math.comb) gore konuluyor. guard'li cagiranlar (eval.py, train.py'nin
+# load_all_configs'u) GRID_N<=20 kontroluyle zaten bu fonksiyona hic girmiyor,
+# ama demo.py/scan.py gibi guard'siz cagiranlar buyuk N'de yanlislikla
+# cagirirsa burada acikca patlasin — sessizce saatlerce takilmak yerine.
+# Esik: 2M yol — saniyeler icinde biter, ustu pratik degil. Buyuk
+# mesafelerde sample_random_monotonic_path() (asagida) kullanilmali —
+# O(path-length), enumerate GEREKTIRMEZ.
+MAX_ENUMERABLE_PATHS = 2_000_000
+
+
 @lru_cache(maxsize=None)
 def all_shortest_paths(start: Cell, goal: Cell) -> tuple[Path, ...]:
     """start -> goal arasindaki TUM en kisa yollar.
@@ -120,6 +134,14 @@ def all_shortest_paths(start: Cell, goal: Cell) -> tuple[Path, ...]:
     step_c = 1 if dc > 0 else -1
     n_r, n_c = abs(dr), abs(dc)
     total = n_r + n_c
+    n_paths = comb(total, n_r)
+    if n_paths > MAX_ENUMERABLE_PATHS:
+        raise ValueError(
+            f"all_shortest_paths({start},{goal}): C({total},{n_r})="
+            f"{n_paths} yol, {MAX_ENUMERABLE_PATHS} sinirinin uzerinde, "
+            f"enumerate etmek pratik degil. Buyuk N'de oracle()/"
+            f"all_shortest_paths() yerine sample_random_monotonic_path() "
+            f"kullan.")
 
     out: list[Path] = []
     for row_steps in combinations(range(total), n_r):

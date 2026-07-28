@@ -85,11 +85,14 @@ LR = 5e-4
 GRAD_CLIP = 10.0
 HIDDEN = 128
 
-# CNN'in learn() cagrisi CPU'da ~10ms olcduldu (6 ileri gecis: online/target x
-# A1/A2 x mevcut/sonraki-Q). HER env adiminda degil, LEARN_EVERY adimda bir
-# gercek gradyan adimi atarak (araya giren push()'lar hala buffer'a giriyor,
-# sadece learn() hesaplamasi atlaniyor) toplam egitim suresini ~4x kisaltir.
-LEARN_EVERY = 4
+# CNN'in learn() cagrisi CPU'da ~2-4ms olculdu (batch=32, P1/scalar_enc dahil),
+# tek bir env.step()'ten (~0.18ms) ~13x pahali. HER env adiminda degil,
+# LEARN_EVERY adimda bir gercek gradyan adimi atarak (araya giren push()'lar
+# hala buffer'a giriyor, sadece learn() hesaplamasi atlaniyor) toplam egitim
+# suresini kisaltir. 4->8: olculen ortalama adim maliyeti ~0.76ms->~0.47ms
+# (~%38 daha hizli). Bedeli: ayni episode sayisinda toplam gradyan adimi
+# yariya iner, yakinsama biraz yavaslayabilir.
+LEARN_EVERY = 8
 
 # ---------------------------------------------------------------- MARL (Asama 4+)
 EPS_START, EPS_END, EPS_DECAY_STEPS = 1.0, 0.05, 50_000
@@ -126,7 +129,7 @@ P_HARD_START, P_HARD_END, P_HARD_CAP = 0.20, 0.80, 0.80
 IQL_EPISODES = 3_000
 IQL_BUFFER = 100_000           # transition, ajan basina (bellek: ~15.6GB RAM'e gore ayarlandi)
 IQL_BATCH = 32
-IQL_EPS_DECAY_STEPS = 130_000  # adim, ajan basina (5000 episode'lik run'da ep~2500'de tabana inecek sekilde olceklendi)
+IQL_EPS_DECAY_STEPS = 145_000  # adim, ajan basina (gercek olcum ~72.7 adim/ep; 4000 episode'lik run'da ep~2000'de tabana iner)
 IQL_LEARN_START = 1_000
 IQL_LR = 1e-4
 IQL_TARGET_UPDATE = 2_000      # adim
@@ -162,7 +165,7 @@ VDN_BATCH = 32
 # 2-hucreli bir Q-salinimina (asagi/yukari sonsuz dongu) kilitlenip kacamadi
 # (reached1_frac sadece %17.1 cikti). 80_000, VDN'in episode-basina decay
 # hizini IQL'inkiyle YAKLASIK esitler.
-VDN_EPS_DECAY_STEPS = 280_000  # adim (paylasilan agin GLOBAL adim sayaci; 5000 episode'lik run'da ep~2500'de tabana inecek sekilde olceklendi)
+VDN_EPS_DECAY_STEPS = 370_000  # adim (paylasilan agin GLOBAL adim sayaci; gercek olcum ~186 adim/ep; 4000 episode'lik run'da ep~2000'de tabana iner)
 VDN_LEARN_START = 1_000
 # DIKKAT: ilk denemede DQN_LR (1e-4) + DQN_TARGET_UPDATE (2000) ile VDN
 # ep~1750 civarinda (A1-yalniz 600 ciftlik izole navigasyon testinde 237/600)
@@ -189,7 +192,7 @@ VDN_EVAL_EVERY = 500
 QMIX_EPISODES = 3_000
 QMIX_BUFFER = 100_000           # state/next_state ekstra yer kapladigi icin VDN'den kucuk
 QMIX_BATCH = 32
-QMIX_EPS_DECAY_STEPS = 280_000  # 5000 episode'lik run'da ep~2500'de tabana inecek sekilde olceklendi (VDN ile ayni gerekce)
+QMIX_EPS_DECAY_STEPS = 315_000  # gercek olcum ~158 adim/ep; 4000 episode'lik run'da ep~2000'de tabana iner
 QMIX_LEARN_START = 1_000
 QMIX_LR = 3e-5
 QMIX_TARGET_UPDATE = 4_000
@@ -224,6 +227,19 @@ STATE_DIM = STATE_CHANNELS * PATCH_SIZE * PATCH_SIZE + STATE_SCALARS   # 890
 # bagimsiz (NxN / patch-boyutu genellemesi icin onemli).
 CNN_CHANNELS = (16, 32)
 CNN_POOL_SIZE = 4
+
+# SKALAR KODLAYICI GENISLIGI — sinyal seyreltmesi duzeltmesi.
+# SORUN: CNN dali 32*4*4 = 512 boyut uretiyordu, skalarlar ise 11. Head'e
+# giren 523 girdinin sadece 2'si (%0.4) ajana "hedef su yonde" diyen
+# dx_hedef/dy_hedef idi. Ustelik FAZ A'da A1 icin ortamda HIC engel yok
+# (step()'te A1'in forb kumesi bos, kendi izinin ustunden gecebiliyor) —
+# yani A1'in gordugu 512 boyutluk CNN ciktisi neredeyse tamamen bilgisiz
+# ve 2 boyutluk gercek sinyali boguyordu.
+# COZUM: skalarlar once kucuk bir MLP ile SCALAR_EMBED boyuta acilir, sonra
+# CNN ciktisiyla birlestirilir. HAM skalarlar da ayrica ekleniyor (skip
+# baglantisi) ki dx/dy'den Q'ya DOGRUDAN lineer bir yol kalsin.
+# Yeni oran: 128/(512+128+11) = %20 (onceki %2.1).
+SCALAR_EMBED = 128
 
 # ---------------------------------------------------------------- yollar
 RUNS_DIR = "runs"

@@ -13,10 +13,19 @@ from env.single_agent import SingleAgentEnv, all_start_goal_pairs
 
 
 def test_mlp_shape():
+    """MLP artik ana egitimde KULLANILMIYOR (build_qnet() CNNQNet donduruyor,
+    bkz. agents/networks.py) — bu test sadece sinifin sekli/ileri-gecisi
+    bozulmadi diye kalan bir dead-code duman testi. Parametre araligi
+    eskiden 5x5'in kucuk OBS_DIM'ine (~129) gore 30-50k'ydi; OBS_DIM artik
+    PATCH_SIZE tabanli (893), bu yuzden gercek sayi ~131k. Sabit bir alt/ust
+    sinir yerine HIDDEN'dan turetilen dogru degerle kiyaslaniyor."""
     net = MLP(OBS_DIM, N_ACTIONS)
     assert net(torch.zeros(7, OBS_DIM)).shape == (7, N_ACTIONS)
     n_params = sum(p.numel() for p in net.parameters())
-    assert 30_000 < n_params < 50_000, n_params
+    from config import HIDDEN
+    expected = ((OBS_DIM + 1) * HIDDEN + (HIDDEN + 1) * HIDDEN
+               + (HIDDEN + 1) * N_ACTIONS)
+    assert n_params == expected, (n_params, expected)
     print(f"  test_mlp_shape OK  ({n_params} parametre)")
 
 
@@ -69,20 +78,34 @@ def test_act_respects_mask():
 
 
 def test_learn_runs_and_stays_finite():
+    """push() her cagrida self.steps'i ilerletir, learn() ise SADECE
+    steps % LEARN_EVERY == 0 iken gercekten ogrenir (agents/dqn.py). Bu
+    yuzden push() ve learn()'u ARALIKLI cagirmak lazim — push()'lari once
+    hepsini bitirip steps'i SABITLEYIP sonra learn()'u N kere cagirmak,
+    steps LEARN_EVERY'ye bolunmuyorsa (ki push sayisina gore degisir) HER
+    seferinde None doner ve test sessizce yanlis pozitif/negatif verir."""
     agent = DQNAgent(seed=0)
     rng = np.random.default_rng(0)
     assert agent.learn() is None, "LEARN_START'tan once ogrenmemeli"
 
     mask = np.ones(N_ACTIONS, dtype=np.float32)
-    for i in range(DQN_LEARN_START + 500):
+    for i in range(DQN_LEARN_START):
         agent.push(rng.random(OBS_DIM).astype(np.float32), int(rng.integers(0, N_ACTIONS)),
                    float(rng.normal()), rng.random(OBS_DIM).astype(np.float32),
                    bool(i % 7 == 0), mask)
-    losses = [agent.learn() for _ in range(50)]
-    assert all(l is not None and np.isfinite(l) for l in losses), losses[:5]
+
+    losses = []
+    for i in range(200):    # LEARN_EVERY ne olursa olsun en az birkac kez tetiklenir
+        agent.push(rng.random(OBS_DIM).astype(np.float32), int(rng.integers(0, N_ACTIONS)),
+                   float(rng.normal()), rng.random(OBS_DIM).astype(np.float32),
+                   bool(i % 7 == 0), mask)
+        losses.append(agent.learn())
+    fired = [l for l in losses if l is not None]
+    assert len(fired) > 0, "learn() bir kez bile gercek gradyan adimi atmadi"
+    assert all(np.isfinite(l) for l in fired), fired[:5]
     assert all(torch.isfinite(p).all() for p in agent.online.parameters()), \
         "ogrenmeden sonra agirliklarda NaN/Inf"
-    print("  test_learn_runs_and_stays_finite OK")
+    print(f"  test_learn_runs_and_stays_finite OK  ({len(fired)}/200 adimda ogrenildi)")
 
 
 def test_single_agent_wrapper():
@@ -125,4 +148,4 @@ if __name__ == "__main__":
     test_learn_runs_and_stays_finite()
     test_single_agent_wrapper()
     test_wrapper_timeout()
-    print("TUM AJAN TESTLERI GECTI ✓")
+    print("TUM AJAN TESTLERI GECTI")

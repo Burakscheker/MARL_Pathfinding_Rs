@@ -147,17 +147,28 @@ class MARLGridEnv:
         oob_value kullanilir — yasak-bolge kanalinda 1.0 (duvar gibi davran,
         agan zaten oraya gidemez), izin kanalinda 0.0 (anlamsiz, ziyaret
         edilmemis sayilir).
+
+        BUG (bulundu ve duzeltildi): eskiden `np.full(..., oob_value)` TUM
+        yamayi (sinir ICI hucreler DAHIL) oob_value ile dolduruyordu, sonra
+        dongu SADECE cell_set uyelerini 1.0'a CEKIYORDU — sinir ici ama
+        cell_set'te OLMAYAN hucreler asla 0.0'a donmuyordu. oob_value=1.0
+        olan yasak-bolge kanalinda bu, TUM yamayi (gercek yasak bolge BOS
+        olsa bile) 1.0 gosteriyordu — olcduldu: bos yasak bolgeyle patch
+        toplami 441/441. Ajan hic bir zaman gercek yasak-bolge sinirini
+        goremiyordu, kanal sabit/bilgisizdi. Duzeltme: sinir ICI hucreler
+        varsayilan 0.0'dan baslar, SADECE gercekten sinir DISI olanlar
+        oob_value alir.
         """
         r0, c0 = center
         size = 2 * radius + 1
-        patch = np.full((size, size), oob_value, dtype=np.float32)
+        patch = np.zeros((size, size), dtype=np.float32)
         for dr in range(-radius, radius + 1):
             rr = r0 + dr
-            if not (0 <= rr < self.n):
-                continue
             for dc in range(-radius, radius + 1):
                 cc = c0 + dc
-                if 0 <= cc < self.n and (rr, cc) in cell_set:
+                if not (0 <= rr < self.n and 0 <= cc < self.n):
+                    patch[dr + radius, dc + radius] = oob_value
+                elif (rr, cc) in cell_set:
                     patch[dr + radius, dc + radius] = 1.0
         return patch
 
@@ -250,29 +261,6 @@ class MARLGridEnv:
             self.path[agent].append(moved_to)
             self.visited[agent].add(moved_to)
 
-        # --- potential-based reward shaping (Ng ve ark. 1999)
-        # Buyuk N'de (100x100) SEYREK terminal odul (sadece hedefe varinca)
-        # rastgele/az-egitilmis bir politikayla neredeyse hic yakalanmaz —
-        # duzlemde rastgele yurusun hedefe beklenen varis suresi N ile
-        # karesel buyur. Bu terim HER ADIMDA hedefe yaklasma/uzaklasmaya
-        # orantili yogun bir sinyal verir. Kanitlanmis ozellik: optimal
-        # politikayi DEGISTIRMEZ (sadece ayni optimumu daha hizli buldurur),
-        # cunku r' = r + gamma*Phi(s')-Phi(s) bicimindeki HERHANGI bir Phi
-        # icin butun politikalarin deger sirasi korunur.
-        # Phi NEGATIF OLMAYAN secildi (0 = en uzak, 1 = hedefte). Onceki
-        # Phi = -d/max_man biciminde, ajan YERINDE KALDIGINDA bile
-        # gamma*Phi - Phi = -0.01*Phi > 0 cikiyordu — yani hareketsizlik kucuk
-        # bir PRIM kazaniyordu (olculdu: +0.004). Negatif olmayan Phi'de ayni
-        # terim <= 0 olur, hareketsizlik prim kazanmaz. Iki bicim de gecerli
-        # potansiyeldir (optimal politikayi degistirmez), bu daha temizi.
-        max_man = 2 * (self.n - 1)
-        if max_man > 0:
-            phi_before = 1.0 - manhattan(pos_before, self.goal) / max_man
-            phi_after = 1.0 - manhattan(self.pos[agent], self.goal) / max_man
-            shaping = SHAPING_COEF * (GAMMA * phi_after - phi_before)
-            r_team += shaping
-            r_ind[agent] += shaping
-
         self.t += 1
         self.phase_t += 1
         info: dict = {"phase": self.phase, "active": agent}
@@ -311,6 +299,32 @@ class MARLGridEnv:
                 r_team += self._close_phase_a(info)
             else:
                 self.done = True
+
+        # --- potential-based reward shaping (Ng, Harada, Russell 1999)
+        # Buyuk N'de (100x100) SEYREK terminal odul (sadece hedefe varinca)
+        # rastgele/az-egitilmis bir politikayla neredeyse hic yakalanmaz —
+        # duzlemde rastgele yurusun hedefe beklenen varis suresi N ile
+        # karesel buyur. Bu terim HER ADIMDA hedefe yaklasma/uzaklasmaya
+        # orantili yogun bir sinyal verir.
+        #
+        # POLICY-INVARIANCE KOSULU: telescoping ozdesligi G' = G +
+        # gamma^T*Phi(s_T) - Phi(s_0) verir. Phi(s_0) sabittir (ayni
+        # baslangic), ama Phi(s_T) POLITIKAYA GORE DEGISIRSE (bizde oyle:
+        # basari->Phi=1, timeout/blocked -> degisken pozisyon) kesin sira
+        # garantisi duser. Guvenli kosul: Phi(terminal)=0 TUM terminal
+        # durumlar icin — bu yuzden shaping SADECE bu adim episode'u
+        # BITIRMIYORSA uygulanir (self.done, TERMINAL KONTROLLERINDEN SONRA
+        # okunuyor — yukarida henuz belirleniyordu, o yuzden bu blok BURADA,
+        # terminal bloktan SONRA). A1'in FAZ A'yi hedefe vararak kapatmasi
+        # (_close_phase_a, done=False kalir) terminal DEGILDIR, shaping
+        # normal uygulanir — sadece episode'un GERCEK sonu (done=True) hariç.
+        max_man = 2 * (self.n - 1)
+        if max_man > 0 and not self.done:
+            phi_before = 1.0 - manhattan(pos_before, self.goal) / max_man
+            phi_after = 1.0 - manhattan(self.pos[agent], self.goal) / max_man
+            shaping = SHAPING_COEF * (GAMMA * phi_after - phi_before)
+            r_team += shaping
+            r_ind[agent] += shaping
 
         if self.done:
             info.update(self._terminal_info())

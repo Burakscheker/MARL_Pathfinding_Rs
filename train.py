@@ -270,6 +270,7 @@ def train_iql(episodes: int = IQL_EPISODES, seed: int = SEED,
     log_file = open(log_path, "w", newline="", encoding="utf-8")
     logger = csv.DictWriter(log_file, fieldnames=[
         "episode", "steps1", "steps2", "eps1", "eps2", "eval_success_rate",
+        "eval_reached1", "eval_reached2",
         "eval_gap1_bad", "eval_mean_gap2", "eval_block_rate",
         "eval_detour_rate", "eval_harm_rate", "eval_hard_harm_rate"])
     logger.writeheader()
@@ -313,6 +314,8 @@ def train_iql(episodes: int = IQL_EPISODES, seed: int = SEED,
                 "eps1": round(agents[AGENT_1].eps, 4),
                 "eps2": round(agents[AGENT_2].eps, 4),
                 "eval_success_rate": round(ev["success_rate"], 4),
+                "eval_reached1": round(ev["reached1_frac"], 4),
+                "eval_reached2": round(ev["reached2_frac"], 4),
                 "eval_gap1_bad": ev["gap1_bad"],
                 "eval_mean_gap2": round(ev["mean_gap2"], 4),
                 "eval_block_rate": round(ev["block_rate"], 4),
@@ -324,11 +327,21 @@ def train_iql(episodes: int = IQL_EPISODES, seed: int = SEED,
             log_file.flush()
             print(f"  [ep {ep:6d}] eps1 {agents[AGENT_1].eps:.3f}"
                   f"  eps2 {agents[AGENT_2].eps:.3f}"
+                  f"  A1-vardi %{100*ev['reached1_frac']:.1f}"
+                  f"  basari %{100*ev['success_rate']:.1f}"
                   f"  A1-kotu {ev['gap1_bad']}/{quick_eval_n}"
                   f"  A2-gap {ev['mean_gap2']:+.3f}"
                   f"  kilit %{100*ev['block_rate']:.2f}"
                   f"  zarar %{100*ev['harm_rate']:.2f}"
                   f"  zarar(zor) %{100*ev['hard_harm_rate']:.2f}", flush=True)
+
+        if ep % 1000 == 0:
+            # Ara-checkpoint: run yarida kesilirse (ornegin elle durdurulursa)
+            # SON tam episode'daki agirliklar diskte kalsin, bellekte kaybolmasin.
+            # AYNI dosyaya yazar (final ile CAKISIR) — normal bitiste zaten
+            # asagidaki son save() bunun UZERINE yazacak, ekstra dosya yok.
+            agents[AGENT_1].save(f"{RUNS_DIR}/ckpt/{tag}_agent1.pt")
+            agents[AGENT_2].save(f"{RUNS_DIR}/ckpt/{tag}_agent2.pt")
 
     log_file.close()
     harm_file.close()
@@ -500,7 +513,8 @@ def train_vdn(episodes: int = VDN_EPISODES, seed: int = SEED,
     log_path = f"{RUNS_DIR}/{tag}_train_log.csv"
     log_file = open(log_path, "w", newline="", encoding="utf-8")
     logger = csv.DictWriter(log_file, fieldnames=[
-        "episode", "steps", "eps", "eval_success_rate", "eval_gap1_bad",
+        "episode", "steps", "eps", "eval_success_rate",
+        "eval_reached1", "eval_reached2", "eval_gap1_bad",
         "eval_mean_gap2", "eval_block_rate", "eval_detour_rate",
         "eval_harm_rate", "eval_hard_harm_rate"])
     logger.writeheader()
@@ -550,6 +564,8 @@ def train_vdn(episodes: int = VDN_EPISODES, seed: int = SEED,
             row = {
                 "episode": ep, "steps": agent.steps, "eps": round(agent.eps, 4),
                 "eval_success_rate": round(ev["success_rate"], 4),
+                "eval_reached1": round(ev["reached1_frac"], 4),
+                "eval_reached2": round(ev["reached2_frac"], 4),
                 "eval_gap1_bad": ev["gap1_bad"],
                 "eval_mean_gap2": round(ev["mean_gap2"], 4),
                 "eval_block_rate": round(ev["block_rate"], 4),
@@ -560,11 +576,18 @@ def train_vdn(episodes: int = VDN_EPISODES, seed: int = SEED,
             logger.writerow(row)
             log_file.flush()
             print(f"  [ep {ep:6d}] eps {agent.eps:.3f}"
+                  f"  A1-vardi %{100*ev['reached1_frac']:.1f}"
+                  f"  basari %{100*ev['success_rate']:.1f}"
                   f"  A1-kotu {ev['gap1_bad']}/{quick_eval_n}"
                   f"  A2-gap {ev['mean_gap2']:+.3f}"
                   f"  kilit %{100*ev['block_rate']:.2f}"
                   f"  zarar %{100*ev['harm_rate']:.2f}"
                   f"  zarar(zor) %{100*ev['hard_harm_rate']:.2f}", flush=True)
+
+        if ep % 1000 == 0:
+            # Ara-checkpoint: run yarida kesilirse SON tam episode'daki
+            # agirliklar diskte kalsin. Ayni dosya, normal bitiste UZERINE yazilir.
+            agent.save(f"{RUNS_DIR}/ckpt/{tag}.pt")
 
     log_file.close()
     harm_file.close()
@@ -591,13 +614,14 @@ def evaluate_qmix(agent: QMixAgent, env: MARLGridEnv, configs: list,
                   difficulty: list | None = None) -> dict:
     """evaluate_vdn ile ayni sozlesme/metrikler, QMixAgent icin."""
     n = len(configs)
-    reached2 = blocked = harmed = gap1_bad = success = 0
+    reached1 = reached2 = blocked = harmed = gap1_bad = success = 0
     gap2_sum = 0.0
     hard_harmed = hard_n = easy_harmed = easy_n = 0
 
     for i, cfg in enumerate(configs):
         info, _ = play_episode_qmix(env, agent, train=False, config=cfg)
         if info["gap1"] is not None:
+            reached1 += 1
             gap1_bad += info["gap1"] != 0
         if info["gap2"] is not None:
             reached2 += 1
@@ -616,6 +640,8 @@ def evaluate_qmix(agent: QMixAgent, env: MARLGridEnv, configs: list,
     return {
         "n": n,
         "success_rate": success / n,
+        "reached1_frac": reached1 / n,
+        "reached2_frac": reached2 / n,
         "gap1_bad": gap1_bad,
         "mean_gap2": gap2_sum / max(reached2, 1),
         "block_rate": blocked / n,
@@ -649,7 +675,8 @@ def train_qmix(episodes: int = QMIX_EPISODES, seed: int = SEED,
     log_path = f"{RUNS_DIR}/{tag}_train_log.csv"
     log_file = open(log_path, "w", newline="", encoding="utf-8")
     logger = csv.DictWriter(log_file, fieldnames=[
-        "episode", "steps", "eps", "eval_success_rate", "eval_gap1_bad",
+        "episode", "steps", "eps", "eval_success_rate",
+        "eval_reached1", "eval_reached2", "eval_gap1_bad",
         "eval_mean_gap2", "eval_block_rate", "eval_harm_rate",
         "eval_hard_harm_rate"])
     logger.writeheader()
@@ -696,6 +723,8 @@ def train_qmix(episodes: int = QMIX_EPISODES, seed: int = SEED,
             row = {
                 "episode": ep, "steps": agent.steps, "eps": round(agent.eps, 4),
                 "eval_success_rate": round(ev["success_rate"], 4),
+                "eval_reached1": round(ev["reached1_frac"], 4),
+                "eval_reached2": round(ev["reached2_frac"], 4),
                 "eval_gap1_bad": ev["gap1_bad"],
                 "eval_mean_gap2": round(ev["mean_gap2"], 4),
                 "eval_block_rate": round(ev["block_rate"], 4),
@@ -705,11 +734,18 @@ def train_qmix(episodes: int = QMIX_EPISODES, seed: int = SEED,
             logger.writerow(row)
             log_file.flush()
             print(f"  [ep {ep:6d}] eps {agent.eps:.3f}"
+                  f"  A1-vardi %{100*ev['reached1_frac']:.1f}"
+                  f"  basari %{100*ev['success_rate']:.1f}"
                   f"  A1-kotu {ev['gap1_bad']}/{quick_eval_n}"
                   f"  A2-gap {ev['mean_gap2']:+.3f}"
                   f"  kilit %{100*ev['block_rate']:.2f}"
                   f"  zarar %{100*ev['harm_rate']:.2f}"
                   f"  zarar(zor) %{100*ev['hard_harm_rate']:.2f}", flush=True)
+
+        if ep % 1000 == 0:
+            # Ara-checkpoint: run yarida kesilirse SON tam episode'daki
+            # agirliklar diskte kalsin. Ayni dosya, normal bitiste UZERINE yazilir.
+            agent.save(f"{RUNS_DIR}/ckpt/{tag}.pt")
 
     log_file.close()
     harm_file.close()

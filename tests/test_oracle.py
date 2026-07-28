@@ -8,7 +8,13 @@ from baselines.bfs_oracle import (all_shortest_paths, bfs_dist, bfs_path,
                                   forbidden_from, manhattan, oracle)
 from config import GRID_N
 
-CELLS = [(r, c) for r in range(GRID_N) for c in range(GRID_N)]
+# BILEREK GRID_N'e DEGIL sabit kucuk bir altkumeye bagli: bu test algoritma
+# DOGRULUGUNU (all_shortest_paths/oracle) sinar, olcek testi degil. GRID_N=50
+# ile CELLS = 50*50 hucre olsaydi product(CELLS,CELLS) 6.25M cift dener,
+# bircogu buyuk mesafeli olur ve MemoryError'a kadar gider (olculdu) —
+# GRID_N buyudukce bu test SESSIZCE 5x5'ten milyonlarca kombinasyona
+# sicramamali.
+CELLS = [(r, c) for r in range(5) for c in range(5)]
 
 
 def test_bfs_basics():
@@ -59,14 +65,22 @@ def test_exemption_rule():
 
 def test_closed_form_blocking_rule():
     """PLAN §0.3: s1==s2==(0,0), g=(4,4) icin
-    A1 kilitler <=> ILK hamlesi ile SON hamlesi ayni yonde."""
+    A1 kilitler <=> ILK hamlesi ile SON hamlesi ayni yonde.
+
+    KRITIK: bu kural ORJINAL PLAN turetmesinde 5x5'in KOSE-DUVARLARINA
+    dayanir (A2, (4,*)/(  *,4) satir-sutununda baska cikis olmadigi icin
+    kosede sikisir). bfs_dist n=GRID_N (artik 50) VARSAYILANINI kullanirsa
+    A2 buyuk gridin acik alanindan dolasip kilitlenmez, kural GECERSIZ
+    gorunur. Bu YERELDIR (5x5'e ozgu, KANITLANMIS bir teorem), o yuzden
+    n=5 ACIKCA sabitleniyor — GRID_N ne olursa olsun bu testin anlami
+    degismemeli."""
     s1 = s2 = (0, 0)
     g = (4, 4)
     n_block = 0
     for p in all_shortest_paths(s1, g):
         first = (p[1][0] - p[0][0], p[1][1] - p[0][1])
         last = (p[-1][0] - p[-2][0], p[-1][1] - p[-2][1])
-        blocked = bfs_dist(s2, g, forbidden_from(p, s1, s2, g)) is None
+        blocked = bfs_dist(s2, g, forbidden_from(p, s1, s2, g), n=5) is None
         assert blocked == (first == last), f"kapali form kurali bozuldu: {p}"
         n_block += blocked
     assert n_block == 30, n_block          # 15 (D..D) + 15 (R..R)
@@ -111,4 +125,4 @@ if __name__ == "__main__":
     test_closed_form_blocking_rule()
     test_oracle_consistency()
     test_no_config_is_dead()
-    print("TUM ORACLE TESTLERI GECTI ✓")
+    print("TUM ORACLE TESTLERI GECTI")

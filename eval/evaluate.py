@@ -36,8 +36,8 @@ def run_episode(env: MARLGridEnv, act_fn, config) -> dict:
 def evaluate_policy(name: str, act_fn, env: MARLGridEnv, configs: list,
                     difficulty: list, on_reset=None) -> dict:
     n = len(configs)
-    reached2 = blocked = harmed = gap1_bad = success = 0
-    gap2_sum = 0.0
+    reached1 = reached2 = blocked = harmed = gap1_bad = success = 0
+    gap1_sum = gap2_sum = 0.0
     hard_harmed = hard_n = easy_harmed = easy_n = 0
 
     for i, cfg in enumerate(configs):
@@ -45,6 +45,8 @@ def evaluate_policy(name: str, act_fn, env: MARLGridEnv, configs: list,
             on_reset()
         info = run_episode(env, act_fn, cfg)
         if info.get("gap1") is not None:
+            reached1 += 1
+            gap1_sum += info["gap1"]
             gap1_bad += info["gap1"] != 0
         if info.get("gap2") is not None:
             reached2 += 1
@@ -62,11 +64,17 @@ def evaluate_policy(name: str, act_fn, env: MARLGridEnv, configs: list,
     return {
         "name": name, "n": n,
         "success_rate": success / n,
+        "reached1_frac": reached1 / n,
+        "reached2_frac": reached2 / n,
         "block_rate": blocked / n,
         "harm_rate": harmed / n,
         "easy_harm_rate": easy_harmed / max(easy_n, 1),
         "hard_harm_rate": hard_harmed / max(hard_n, 1),
         "gap1_bad": gap1_bad,
+        # "dolanma" olcusu: hedefe VARDIKTAN SONRA ortalama kac adim fazla
+        # atildi (0 = tam optimal). gap1_bad sadece ikili (optimal mi degil
+        # mi) veriyordu, BUYUKLUK vermiyordu.
+        "mean_gap1": gap1_sum / max(reached1, 1),
         "mean_gap2": gap2_sum / max(reached2, 1),
     }
 
@@ -143,15 +151,17 @@ def main(vdn_tag: str = "vdn_final", qmix_tag: str = "qmix_final",
         print(f"  ATLANDI: {qmix_ckpt} yok")
 
     lines = [
-        "| Politika | Başarı | Kilitleme | Zarar (genel) | Zarar (kolay) | Zarar (zor) | A1 optimal-değil | A2 gap |",
-        "|---|---:|---:|---:|---:|---:|---:|---:|",
+        "| Politika | Başarı | A1 vardı | A2 vardı | Kilitleme | Zarar (genel) | Zarar (kolay) | Zarar (zor) | A1 ort. gap | A2 ort. gap |",
+        "|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|",
     ]
     for r in results:
         lines.append(
-            f"| {r['name']} | %{100*r['success_rate']:.2f} | %{100*r['block_rate']:.2f} "
+            f"| {r['name']} | %{100*r['success_rate']:.2f} "
+            f"| %{100*r['reached1_frac']:.2f} | %{100*r['reached2_frac']:.2f} "
+            f"| %{100*r['block_rate']:.2f} "
             f"| %{100*r['harm_rate']:.2f} | %{100*r['easy_harm_rate']:.2f} "
-            f"| %{100*r['hard_harm_rate']:.2f} | {r['gap1_bad']}/{r['n']} "
-            f"| {r['mean_gap2']:+.3f} |")
+            f"| %{100*r['hard_harm_rate']:.2f} "
+            f"| {r['mean_gap1']:+.3f} | {r['mean_gap2']:+.3f} |")
     table = "\n".join(lines)
     print("\n" + table)
 
