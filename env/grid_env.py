@@ -23,7 +23,7 @@ from config import (AGENT_1, AGENT_2, ALLOW_SAME_START, DIRS, GAMMA, GRID_N,
                     MAX_STEPS_PER_PHASE, MAX_STEPS_TOTAL, NOOP, N_ACTIONS,
                     OBS_DIM, PATCH_RADIUS, R_AGENT_GOAL, R_BLOCKED,
                     R_BOTH_GOAL, R_INVALID, R_OPT_GAP, R_REVISIT, R_STEP,
-                    R_TIMEOUT, SHAPING_COEF, STATE_DIM)
+                    R_TIMEOUT, SHAPING_COEF, STATE_DIM, WALL_WIDTHS)
 
 Cell = tuple[int, int]
 
@@ -38,11 +38,16 @@ class MARLGridEnv:
     def __init__(self, n: int = GRID_N,
                  max_steps_per_phase: int = MAX_STEPS_PER_PHASE,
                  allow_same_start: bool = ALLOW_SAME_START,
-                 seed: Optional[int] = None):
+                 seed: Optional[int] = None,
+                 difficulty: Optional[str] = None):
+        """difficulty: None (varsayilan, engelsiz), "easy"/"medium"/"hard"
+        (bkz. config.py WALL_WIDTHS) -- her ajanin baslangicindan hedefe
+        DIK, o genislikte statik bir duvar ekler."""
         self.n = n
         self.max_steps_per_phase = max_steps_per_phase
         self.max_steps_total = 2 * max_steps_per_phase
         self.allow_same_start = allow_same_start
+        self.difficulty = difficulty
         self.rng = np.random.default_rng(seed)
         self._cells = [(r, c) for r in range(n) for c in range(n)]
         self.reset()
@@ -60,6 +65,32 @@ class MARLGridEnv:
                 continue
             return s1, s2, g
 
+    def _build_wall(self, start: Cell, goal: Cell, width: int) -> frozenset:
+        """start-hedef ortasinda, BASKIN eksene DIK, width genisliginde duvar.
+
+        Orta nokta = start + (goal-start)/2 (tam sayi bolme). Baskin eksen =
+        satir farki >= sutun farki ise YATAY duvar (satir sabit, sutunlar
+        boyunca genisler); degilse DIKEY duvar (sutun sabit, satirlar boyunca
+        genisler) — 4-yonlu grid'de gercek "vektore dik" cizginin tek duzgun
+        (delik-siz) temsili budur, capraz bir cizgi kose-sizmasina acik olurdu.
+
+        width < GRID_N oldugu icin sinira tasan uc kirpilir (clip), duvar
+        boylece en fazla TEK kenara deger — oteki taraf HER ZAMAN acik kalir.
+        """
+        mr, mc = (start[0] + goal[0]) // 2, (start[1] + goal[1]) // 2
+        dr, dc = abs(start[0] - goal[0]), abs(start[1] - goal[1])
+        half = width // 2
+        cells: set[Cell] = set()
+        if dr >= dc:
+            for c in range(mc - half, mc + half + 1):
+                if 0 <= c < self.n:
+                    cells.add((mr, c))
+        else:
+            for r in range(mr - half, mr + half + 1):
+                if 0 <= r < self.n:
+                    cells.add((r, mc))
+        return frozenset(cells)
+
     # -------------------------------------------------------------- reset
 
     def reset(self, config: Optional[tuple[Cell, Cell, Cell]] = None,
@@ -74,6 +105,20 @@ class MARLGridEnv:
 
         # Muaf hucreler — PLAN §1'in kritik kurali
         self.exempt = frozenset({self.s1, self.s2, self.goal})
+
+        # Statik engeller (zorluk modu) — bkz. __init__ ve config.py WALL_WIDTHS.
+        self.walls: frozenset = frozenset()
+        if self.difficulty is not None:
+            width = WALL_WIDTHS[self.difficulty]
+            candidate = (self._build_wall(self.s1, self.goal, width)
+                        | self._build_wall(self.s2, self.goal, width)) - self.exempt
+            # Tek duvar geometrik olarak HER ZAMAN dolanilabilir (genislik <
+            # GRID_N), ama IKI ajanin duvari BIRLESIP hedefi sarabilir --
+            # bunu BFS ile dogrula. Cozulemezse config'i DEGISTIRME, sadece
+            # bu episode icin duvarlari kapat.
+            if (bfs_dist(self.s1, self.goal, candidate, self.n) is not None
+                    and bfs_dist(self.s2, self.goal, candidate, self.n) is not None):
+                self.walls = candidate
 
         self.phase = 0            # 0 = FAZ A (A1), 1 = FAZ B (A2)
         self.t = 0                # global adim
@@ -118,7 +163,7 @@ class MARLGridEnv:
         SingleAgentEnv ile ayni tuzak). Bu metod o acigi kapatir.
         """
         mask = np.zeros(N_ACTIONS, dtype=np.float32)
-        forb = self.forbidden if agent == AGENT_2 else frozenset()
+        forb = self.walls | (self.forbidden if agent == AGENT_2 else frozenset())
         cur = self.pos[agent]
         for a, (dr, dc) in enumerate(DIRS):
             nxt = (cur[0] + dr, cur[1] + dc)
@@ -175,7 +220,7 @@ class MARLGridEnv:
     def observe(self, agent: int) -> np.ndarray:
         n = self.n
         own, other = self.pos[agent], self.pos[1 - agent]
-        forb_patch = self._local_patch(own, self.forbidden_view(), PATCH_RADIUS, 1.0)
+        forb_patch = self._local_patch(own, self.walls | self.forbidden_view(), PATCH_RADIUS, 1.0)
         visited_patch = self._local_patch(own, self.visited[agent], PATCH_RADIUS, 0.0)
         ch = np.stack([forb_patch, visited_patch])
 
@@ -200,7 +245,7 @@ class MARLGridEnv:
         penceresi + pozisyon skalarlari (tam-grid one-hot DEGIL, ayni buyuk-N
         gerekcesi — bkz. observe())."""
         n = self.n
-        forb = self.forbidden_view()
+        forb = self.walls | self.forbidden_view()
         patch1 = self._local_patch(self.pos[AGENT_1], forb, PATCH_RADIUS, 1.0)
         patch2 = self._local_patch(self.pos[AGENT_2], forb, PATCH_RADIUS, 1.0)
         ch = np.stack([patch1, patch2])
@@ -243,7 +288,7 @@ class MARLGridEnv:
             dr, dc = DIRS[a]
             cur = self.pos[agent]
             nxt = (cur[0] + dr, cur[1] + dc)
-            forb = self.forbidden if agent == AGENT_2 else frozenset()
+            forb = self.walls | (self.forbidden if agent == AGENT_2 else frozenset())
             if not self._in_bounds(nxt) or nxt in forb:
                 r_team += R_INVALID              # duvar / yasak hucre: yerinde kal
                 r_ind[agent] += R_INVALID
@@ -343,7 +388,7 @@ class MARLGridEnv:
         """
         self.forbidden = forbidden_from(tuple(self.path[AGENT_1]),
                                         self.s1, self.s2, self.goal)
-        d2 = bfs_dist(self.s2, self.goal, self.forbidden, self.n)
+        d2 = bfs_dist(self.s2, self.goal, self.forbidden | self.walls, self.n)
         info["forbidden_size"] = len(self.forbidden)
         if d2 is None:
             self._blocked = True
@@ -425,11 +470,13 @@ class MARLGridEnv:
                     row.append("2")
                 elif cell == self.goal:
                     row.append("G")
+                elif cell in self.walls:
+                    row.append("W")
                 elif cell in forb:
                     row.append("#")
                 else:
                     row.append(".")
             rows.append(" ".join(row))
         head = (f"faz={'A' if self.phase == 0 else 'B'} t={self.t} "
-                f"aktif=A{self.active + 1} yasak={len(forb)}")
+                f"aktif=A{self.active + 1} yasak={len(forb)} duvar={len(self.walls)}")
         return head + "\n" + "\n".join(rows)

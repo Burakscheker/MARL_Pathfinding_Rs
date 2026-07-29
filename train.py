@@ -240,7 +240,8 @@ def _make_iql_agent(seed: int) -> DQNAgent:
 
 def train_iql(episodes: int = IQL_EPISODES, seed: int = SEED,
               eval_every: int = IQL_EVAL_EVERY,
-              quick_eval_n: int = 200, tag: str = "iql") -> dict:
+              quick_eval_n: int = 200, tag: str = "iql",
+              obstacle_difficulty: str | None = None) -> dict:
     """Iki bagimsiz DQN, ortak odul YOK. PLAN §Asama 4.
 
     grid_env.py'deki info["r_ind"] zaten sadece step-cost + kendi hedef
@@ -255,8 +256,14 @@ def train_iql(episodes: int = IQL_EPISODES, seed: int = SEED,
 
     Konfigler UNIFORM ornekleniyor (env.sample_config()) — zorluk-agirlikli
     curriculum KALDIRILDI, bkz. train_vdn'deki ayni not.
+
+    obstacle_difficulty: None (varsayilan, engelsiz) / "easy"/"medium"/"hard"
+    -- MARLGridEnv'e statik duvar zorlugu olarak gecirilir (bkz. config.py
+    WALL_WIDTHS). "difficulty" (tekil) adini KASITLI KULLANMADIK: bu
+    fonksiyonda zaten mesafe-tabanli hard/easy ETIKETLERI (all_difficulty,
+    quick_difficulty) var, isim karismasin diye.
     """
-    env = MARLGridEnv(seed=seed)
+    env = MARLGridEnv(seed=seed, difficulty=obstacle_difficulty)
     agents = {AGENT_1: _make_iql_agent(seed), AGENT_2: _make_iql_agent(seed + 1)}
 
     all_configs, all_difficulty = load_all_configs()
@@ -375,7 +382,7 @@ def _record_demo_episodes(episode_fn, n: int, tag: str) -> list[dict]:
         episodes.append({
             "idx": i, "s1": s1, "s2": s2, "goal": goal,
             "path1": info["path1"], "path2": info["path2"],
-            "forbidden": info["forbidden"],
+            "forbidden": info["forbidden"], "walls": info.get("walls", []),
             "success": info["success"], "blocked": info["blocked"],
             "detoured": info["detoured"], "harmed": info["harmed"],
             "len1": info["len1"], "len2": info["len2"],
@@ -393,7 +400,7 @@ def _record_demo_episodes(episode_fn, n: int, tag: str) -> list[dict]:
 
 
 def record_demo_episodes(agents: dict, n: int = DEMO_EPISODES, seed: int = DEMO_SEED,
-                         tag: str = "iql") -> list[dict]:
+                         tag: str = "iql", obstacle_difficulty: str | None = None) -> list[dict]:
     """Egitim SONRASI, epsilon=0 (tam deterministik, rastgele hamle YOK) N episode
     oynatir; her birinin tam yol/harita verisini JSON'a yazar (viz/plot_iql_report.py
     bunu okuyup harita cizer).
@@ -401,36 +408,41 @@ def record_demo_episodes(agents: dict, n: int = DEMO_EPISODES, seed: int = DEMO_
     Ayri bir MARLGridEnv kullanir: egitimin kendi rng akisina dokunmaz, ve
     DEMO_SEED sabit oldugu icin gosterim konfigleri egitim uzunlugundan
     bagimsiz olarak HER ZAMAN aynidir — kosular arasi karsilastirilabilir.
+
+    obstacle_difficulty: egitimde kullanilanla AYNI verilmeli, yoksa gosterim
+    haritasi duvarsiz (ya da farkli genislikte) cizilir — egitimle tutarsiz olur.
     """
-    demo_env = MARLGridEnv(seed=seed)
+    demo_env = MARLGridEnv(seed=seed, difficulty=obstacle_difficulty)
 
     def one():
         info, _ = play_episode(demo_env, agents, train=False)
-        return {**info, "forbidden": sorted(demo_env.forbidden)}
+        return {**info, "forbidden": sorted(demo_env.forbidden), "walls": sorted(demo_env.walls)}
 
     return _record_demo_episodes(one, n=n, tag=tag)
 
 
 def record_demo_episodes_vdn(agent: VDNAgent, n: int = DEMO_EPISODES,
-                             seed: int = DEMO_SEED, tag: str = "vdn") -> list[dict]:
+                             seed: int = DEMO_SEED, tag: str = "vdn",
+                             obstacle_difficulty: str | None = None) -> list[dict]:
     """record_demo_episodes ile ayni sozlesme, tek paylasilan VDNAgent icin."""
-    demo_env = MARLGridEnv(seed=seed)
+    demo_env = MARLGridEnv(seed=seed, difficulty=obstacle_difficulty)
 
     def one():
         info, _ = play_episode_vdn(demo_env, agent, train=False)
-        return {**info, "forbidden": sorted(demo_env.forbidden)}
+        return {**info, "forbidden": sorted(demo_env.forbidden), "walls": sorted(demo_env.walls)}
 
     return _record_demo_episodes(one, n=n, tag=tag)
 
 
 def record_demo_episodes_qmix(agent: QMixAgent, n: int = DEMO_EPISODES,
-                              seed: int = DEMO_SEED, tag: str = "qmix") -> list[dict]:
+                              seed: int = DEMO_SEED, tag: str = "qmix",
+                              obstacle_difficulty: str | None = None) -> list[dict]:
     """record_demo_episodes ile ayni sozlesme, QMixAgent icin."""
-    demo_env = MARLGridEnv(seed=seed)
+    demo_env = MARLGridEnv(seed=seed, difficulty=obstacle_difficulty)
 
     def one():
         info, _ = play_episode_qmix(demo_env, agent, train=False)
-        return {**info, "forbidden": sorted(demo_env.forbidden)}
+        return {**info, "forbidden": sorted(demo_env.forbidden), "walls": sorted(demo_env.walls)}
 
     return _record_demo_episodes(one, n=n, tag=tag)
 
@@ -486,7 +498,8 @@ def evaluate_vdn(agent: VDNAgent, env: MARLGridEnv, configs: list,
 
 def train_vdn(episodes: int = VDN_EPISODES, seed: int = SEED,
              eval_every: int = VDN_EVAL_EVERY,
-             quick_eval_n: int = 200, tag: str = "vdn") -> dict:
+             quick_eval_n: int = 200, tag: str = "vdn",
+             obstacle_difficulty: str | None = None) -> dict:
     """Paylasilan TEK Q-agi, golge NOOP ile baglanmis TEK TD hatasi. PLAN §Asama 5.
 
     IQL'den (train_iql) TEK mimari fark play_episode_vdn'de: HER t'de HER IKI
@@ -499,8 +512,11 @@ def train_vdn(episodes: int = VDN_EPISODES, seed: int = SEED,
     boyunca %20->%80 yukselten PLAN §Asama 6 mekanizmasi) KALDIRILDI: ajanin
     hedefe varamadigi bir donemde gorevi giderek zorlastirmak, ayni anda
     dusen epsilon'la birleserek cifte sikistirma yaratiyordu.
+
+    obstacle_difficulty: bkz. train_iql'deki ayni parametrenin notu (statik
+    duvar zorlugu, mesafe-tabanli difficulty listeleriyle KARISTIRILMASIN).
     """
-    env = MARLGridEnv(seed=seed)
+    env = MARLGridEnv(seed=seed, difficulty=obstacle_difficulty)
     agent = VDNAgent(seed=seed)
 
     all_configs, all_difficulty = load_all_configs()
@@ -655,14 +671,17 @@ def evaluate_qmix(agent: QMixAgent, env: MARLGridEnv, configs: list,
 
 def train_qmix(episodes: int = QMIX_EPISODES, seed: int = SEED,
               eval_every: int = QMIX_EVAL_EVERY,
-              quick_eval_n: int = 200, tag: str = "qmix") -> dict:
+              quick_eval_n: int = 200, tag: str = "qmix",
+              obstacle_difficulty: str | None = None) -> dict:
     """VDN'in ustune monotonik mixer. PLAN §Asama 7.
 
     train_vdn ile TEK fark play_episode_qmix'te: her joint transition'a
     global state (env.state()) eklenir, mixer agirliklarini bundan uretir.
     Konfigler uniform ornekleniyor (curriculum kaldirildi, bkz. train_vdn).
+
+    obstacle_difficulty: bkz. train_iql'deki ayni parametrenin notu.
     """
-    env = MARLGridEnv(seed=seed)
+    env = MARLGridEnv(seed=seed, difficulty=obstacle_difficulty)
     agent = QMixAgent(seed=seed)
 
     all_configs, all_difficulty = load_all_configs()
@@ -773,6 +792,9 @@ if __name__ == "__main__":
                     help="cikti dosyalarinin oneki (varsayilan: --algo degeri)")
     p.add_argument("--no-demo", action="store_true",
                     help="iql/vdn icin: egitim sonrasi 10-episode gosterim+grafik adimini atla")
+    p.add_argument("--difficulty", default=None, choices=["easy", "medium", "hard"],
+                    help="statik duvar zorlugu (bkz. config.py WALL_WIDTHS); "
+                         "verilmezse duvarsiz (eski davranis)")
     args = p.parse_args()
 
     if args.algo == "dqn":
@@ -782,10 +804,12 @@ if __name__ == "__main__":
     elif args.algo == "iql":
         episodes = args.episodes or IQL_EPISODES
         tag = args.tag or "iql"
-        print(f"=== IQL egitimi | {episodes} episode | seed {args.seed} | tag={tag} ===")
-        result = train_iql(episodes=episodes, seed=args.seed, tag=tag)
+        print(f"=== IQL egitimi | {episodes} episode | seed {args.seed} | tag={tag}"
+              f" | duvar={args.difficulty} ===")
+        result = train_iql(episodes=episodes, seed=args.seed, tag=tag,
+                           obstacle_difficulty=args.difficulty)
         if not args.no_demo:
-            record_demo_episodes(result["agents"], tag=tag)
+            record_demo_episodes(result["agents"], tag=tag, obstacle_difficulty=args.difficulty)
             from viz.plot_iql_report import plot_demo_grids, plot_harm_curve
             os.makedirs(f"{RUNS_DIR}/viz", exist_ok=True)
             plot_harm_curve(tag, f"{RUNS_DIR}/viz/{tag}_harm_curve.png")
@@ -793,10 +817,12 @@ if __name__ == "__main__":
     elif args.algo == "vdn":
         episodes = args.episodes or VDN_EPISODES
         tag = args.tag or "vdn"
-        print(f"=== VDN egitimi | {episodes} episode | seed {args.seed} | tag={tag} ===")
-        result = train_vdn(episodes=episodes, seed=args.seed, tag=tag)
+        print(f"=== VDN egitimi | {episodes} episode | seed {args.seed} | tag={tag}"
+              f" | duvar={args.difficulty} ===")
+        result = train_vdn(episodes=episodes, seed=args.seed, tag=tag,
+                           obstacle_difficulty=args.difficulty)
         if not args.no_demo:
-            record_demo_episodes_vdn(result["agent"], tag=tag)
+            record_demo_episodes_vdn(result["agent"], tag=tag, obstacle_difficulty=args.difficulty)
             from viz.plot_iql_report import plot_demo_grids, plot_harm_curve
             os.makedirs(f"{RUNS_DIR}/viz", exist_ok=True)
             plot_harm_curve(tag, f"{RUNS_DIR}/viz/{tag}_harm_curve.png")
@@ -804,10 +830,12 @@ if __name__ == "__main__":
     else:  # qmix
         episodes = args.episodes or QMIX_EPISODES
         tag = args.tag or "qmix"
-        print(f"=== QMIX egitimi | {episodes} episode | seed {args.seed} | tag={tag} ===")
-        result = train_qmix(episodes=episodes, seed=args.seed, tag=tag)
+        print(f"=== QMIX egitimi | {episodes} episode | seed {args.seed} | tag={tag}"
+              f" | duvar={args.difficulty} ===")
+        result = train_qmix(episodes=episodes, seed=args.seed, tag=tag,
+                            obstacle_difficulty=args.difficulty)
         if not args.no_demo:
-            record_demo_episodes_qmix(result["agent"], tag=tag)
+            record_demo_episodes_qmix(result["agent"], tag=tag, obstacle_difficulty=args.difficulty)
             from viz.plot_iql_report import plot_demo_grids, plot_harm_curve
             os.makedirs(f"{RUNS_DIR}/viz", exist_ok=True)
             plot_harm_curve(tag, f"{RUNS_DIR}/viz/{tag}_harm_curve.png")

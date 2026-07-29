@@ -19,6 +19,7 @@ import numpy as np
 from config import GRID_N, RUNS_DIR, TRAIN_HARM_WINDOW
 
 C_A1, C_A2, C_FORBIDDEN, C_GOAL = "#4C72B0", "#DD8452", "#d9d9d9", "#2ca02c"
+C_WALL = "#5a5a5a"    # statik engel (duvar) — A1 izinden gelen yasak bolgeden (C_FORBIDDEN) ayirt edilsin diye koyu
 BASELINE_HARM_PCT = 13.28      # random-shortest baseline, PLAN §0.3
 
 
@@ -95,6 +96,12 @@ def _draw_board(ax, ep: dict):
         r, c = cell
         ax.add_patch(plt.Rectangle((c, r), 1, 1, color=C_FORBIDDEN, zorder=0))
 
+    # Statik duvarlar (zorluk modu) — eski JSON'larda "walls" alani olmayabilir,
+    # .get() ile geriye-uyumlu.
+    for cell in ep.get("walls", []):
+        r, c = cell
+        ax.add_patch(plt.Rectangle((c, r), 1, 1, color=C_WALL, zorder=1))
+
     p1 = [_cell_center(c) for c in ep["path1"]]
     xs, ys = zip(*p1)
     ax.plot(xs, ys, "-o", color=C_A1, lw=2, ms=4, zorder=2)
@@ -139,9 +146,10 @@ def plot_demo_grids(tag: str, out_path: str):
         plt.Line2D([0], [0], color=C_A1, marker="o", label="A1 yolu"),
         plt.Line2D([0], [0], color=C_A2, marker="o", label="A2 yolu"),
         plt.Rectangle((0, 0), 1, 1, color=C_FORBIDDEN, label="yasak bölge (A1 izi)"),
+        plt.Rectangle((0, 0), 1, 1, color=C_WALL, label="duvar (statik engel)"),
         plt.Line2D([0], [0], color=C_GOAL, marker="*", lw=0, ms=12, label="hedef"),
     ]
-    fig.legend(handles=handles, loc="lower center", ncol=4, fontsize=9,
+    fig.legend(handles=handles, loc="lower center", ncol=5, fontsize=9,
               bbox_to_anchor=(0.5, -0.01))
     n_harmed = sum(e["harmed"] for e in episodes)
     fig.suptitle(f"Egitim sonrasi {len(episodes)} deterministik episode "

@@ -86,8 +86,12 @@ def _make_iql_agent(seed: int) -> DQNAgent:
 
 
 def main(vdn_tag: str = "vdn_final", qmix_tag: str = "qmix_final",
-        iql_tag: str = "iql", n_eval: int = 2_000) -> list[dict]:
-    env = MARLGridEnv(seed=0)
+        iql_tag: str = "iql", n_eval: int = 2_000,
+        obstacle_difficulty: str | None = None) -> list[dict]:
+    """obstacle_difficulty: checkpoint'lerin EGITILDIGI zorlukla AYNI verilmeli
+    -- yoksa duvarli egitilmis bir model duvarsiz ortamda (ya da tam tersi)
+    degerlendirilir, sonuclar egitim kosuluyla tutarsiz olur."""
+    env = MARLGridEnv(seed=0, difficulty=obstacle_difficulty)
     configs, difficulty = load_all_configs()
     if len(configs) > n_eval:
         idx = __import__("numpy").random.default_rng(0).choice(
@@ -166,8 +170,9 @@ def main(vdn_tag: str = "vdn_final", qmix_tag: str = "qmix_final",
     print("\n" + table)
 
     os.makedirs(RUNS_DIR, exist_ok=True)
+    duvar_notu = f", duvar={obstacle_difficulty}" if obstacle_difficulty else ""
     header = (f"# Asama 8 — Final Karşılaştırma ({len(configs)} örneklem konfig, "
-             f"GRID_N={GRID_N})\n\n")
+             f"GRID_N={GRID_N}{duvar_notu})\n\n")
     with open(f"{RUNS_DIR}/eval_report.md", "w", encoding="utf-8") as f:
         f.write(header + table + "\n")
     print(f"\nyazildi: {RUNS_DIR}/eval_report.md")
@@ -181,6 +186,8 @@ if __name__ == "__main__":
     p.add_argument("--qmix-tag", default="qmix_final")
     p.add_argument("--iql-tag", default="iql")
     p.add_argument("--n-eval", type=int, default=2_000)
+    p.add_argument("--difficulty", default=None, choices=["easy", "medium", "hard"],
+                    help="checkpoint'lerin egitildigi duvar zorlugu (bkz. train.py --difficulty)")
     args = p.parse_args()
     main(vdn_tag=args.vdn_tag, qmix_tag=args.qmix_tag, iql_tag=args.iql_tag,
-        n_eval=args.n_eval)
+        n_eval=args.n_eval, obstacle_difficulty=args.difficulty)
