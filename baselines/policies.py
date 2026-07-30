@@ -34,7 +34,11 @@ class ScriptedPolicy:
 
     @staticmethod
     def _bfs_path2(env):
-        return bfs_path(env.s2, env.goal, env.forbidden, env.n)
+        # DUVAR NOTU: A2'nin GERCEK engeli sadece env.forbidden (A1'in izi)
+        # degil, env.walls (statik engel) da -- ikisi ayri kumeler, physical_mask
+        # ikisini de kontrol ediyor. Eskiden sadece forbidden veriliyordu, duvar
+        # modunda A2'nin "en kisa yol" tahmini duvarin icinden geciyordu.
+        return bfs_path(env.s2, env.goal, env.forbidden | env.walls, env.n)
 
     def reset(self):
         self._queue = []
@@ -50,10 +54,21 @@ class ScriptedPolicy:
 
 def random_shortest_policy(rng=None) -> ScriptedPolicy:
     """A1: optimal yollarindan uniform rastgele biri (enumerate ETMEDEN,
-    buyuk N'de de calisir — bkz. sample_random_monotonic_path). A2: BFS."""
+    buyuk N'de de calisir — bkz. sample_random_monotonic_path). A2: BFS.
+
+    DUVAR NOTU: sample_random_monotonic_path engel BILMIYOR (monotonik yol
+    varsayimi acik gridde gecerli) -- duvar varsa monotonik bir yolun hic
+    olmama ihtimali de var (duvar dogrudan koridoru kapatabilir). Bu yuzden
+    env.walls DOLUYSA BFS'e dusuyoruz (env.walls bos degil = duvar modu
+    aktif, walls'i blocked kumesine katan gercek en kisa yolu buluyor).
+    Bos ise (duvarsiz) ESKI davranis (uniform rastgele monotonik yol)
+    degismeden korunuyor.
+    """
     rng = rng or np.random.default_rng()
 
     def pick(env):
+        if env.walls:
+            return bfs_path(env.s1, env.goal, env.walls, env.n)
         return sample_random_monotonic_path(env.s1, env.goal, rng)
 
     return ScriptedPolicy(pick, rng=rng)
@@ -61,7 +76,7 @@ def random_shortest_policy(rng=None) -> ScriptedPolicy:
 
 def selfish_bfs_policy() -> ScriptedPolicy:
     """A1: BFS'in ilk buldugu yol (A2'yi hic dusunmez). A2: BFS."""
-    return ScriptedPolicy(lambda env: bfs_path(env.s1, env.goal))
+    return ScriptedPolicy(lambda env: bfs_path(env.s1, env.goal, env.walls, env.n))
 
 
 def oracle_policy() -> ScriptedPolicy:
