@@ -33,6 +33,32 @@ def neighbors(c: Cell, n: int = GRID_N):
 
 # --------------------------------------------------------------------- BFS
 
+def bfs_distance_map(source: Cell, blocked=frozenset(), n: int = GRID_N) -> dict:
+    """source'tan TUM ulasilabilir hucrelere BFS mesafesi (tek-kaynak tam
+    flood-fill), sozluk olarak.
+
+    Duvar-farkinda reward shaping icin: hedeften TEK BFS ile grid'in
+    tamamina mesafe cikarilir, sonra HER ADIMDA sozlukten O(1) okunur —
+    ayni (nokta,hedef) cifti icin defalarca bfs_dist() cagirmaktan
+    (her biri kendi ayri BFS'i) cok daha ucuz. Bir episode'da en fazla
+    2 kez cagrilir (FAZ A basinda A1 icin, FAZ B basinda A2 icin) —
+    duvarlar/yasak bolge o fazin SUresi boyunca sabit kaldigindan.
+    """
+    if source in blocked:
+        return {source: 0}
+    dist = {source: 0}
+    q = deque([source])
+    while q:
+        cur = q.popleft()
+        d = dist[cur]
+        for nb in neighbors(cur, n):
+            if nb in blocked or nb in dist:
+                continue
+            dist[nb] = d + 1
+            q.append(nb)
+    return dist
+
+
 def bfs_dist(start: Cell, goal: Cell, blocked=frozenset(), n: int = GRID_N) -> Optional[int]:
     """En kisa mesafe, ulasilamiyorsa None."""
     if start in blocked or goal in blocked:

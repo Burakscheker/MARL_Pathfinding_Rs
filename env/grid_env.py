@@ -18,7 +18,8 @@ from typing import Optional
 
 import numpy as np
 
-from baselines.bfs_oracle import bfs_dist, forbidden_from, manhattan
+from baselines.bfs_oracle import (bfs_dist, bfs_distance_map, forbidden_from,
+                                  manhattan)
 from config import (AGENT_1, AGENT_2, ALLOW_SAME_START, DIRS, GAMMA, GRID_N,
                     MAX_STEPS_PER_PHASE, MAX_STEPS_TOTAL, NOOP, N_ACTIONS,
                     OBS_DIM, PATCH_RADIUS, R_AGENT_GOAL, R_BLOCKED,
@@ -119,6 +120,13 @@ class MARLGridEnv:
             if (bfs_dist(self.s1, self.goal, candidate, self.n) is not None
                     and bfs_dist(self.s2, self.goal, candidate, self.n) is not None):
                 self.walls = candidate
+
+        # Duvar-farkinda shaping icin hedeften TEK BFS ile mesafe haritasi
+        # (bkz. step()'teki shaping bloku). FAZ A boyunca A1'in tek engeli
+        # duvarlar (sabit) — bu yuzden burada, episode basinda BIR KEZ
+        # cikarilip fazin sonuna kadar yeniden kullanilir. A2'ninki (walls
+        # + forbidden) _close_phase_a()'da, forbidden sabitlenince cikarilir.
+        self._dist_map = {AGENT_1: bfs_distance_map(self.goal, self.walls, self.n)}
 
         self.phase = 0            # 0 = FAZ A (A1), 1 = FAZ B (A2)
         self.t = 0                # global adim
@@ -352,6 +360,15 @@ class MARLGridEnv:
         # karesel buyur. Bu terim HER ADIMDA hedefe yaklasma/uzaklasmaya
         # orantili yogun bir sinyal verir.
         #
+        # DUVAR-FARKINDA MESAFE (bulundu ve duzeltildi): eskiden duz Manhattan
+        # kullaniliyordu — duvar/yasak-bolge YOKKEN doğruydu, ama duvar VARKEN
+        # ajani DUVARA DOGRU (yanlis yone) itebiliyordu, cunku Manhattan
+        # engeli gormez. Artik reset()/_close_phase_a()'da hedeften cikarilan
+        # BFS mesafe haritasindan (self._dist_map) okunuyor — GERCEK en kisa
+        # yol mesafesi, duvarin etrafindan dolanmayi dogru yansitir. Duvarsiz
+        # halde (self.walls bos) BFS mesafesi Manhattan'la MATEMATIKSEL
+        # OZDESTIR (4-yonlu acik gridde), yani eski davranis DEGISMEDEN korunur.
+        #
         # POLICY-INVARIANCE KOSULU: telescoping ozdesligi G' = G +
         # gamma^T*Phi(s_T) - Phi(s_0) verir. Phi(s_0) sabittir (ayni
         # baslangic), ama Phi(s_T) POLITIKAYA GORE DEGISIRSE (bizde oyle:
@@ -363,10 +380,14 @@ class MARLGridEnv:
         # terminal bloktan SONRA). A1'in FAZ A'yi hedefe vararak kapatmasi
         # (_close_phase_a, done=False kalir) terminal DEGILDIR, shaping
         # normal uygulanir — sadece episode'un GERCEK sonu (done=True) hariç.
+        # Bu ANY Phi icin gecerli (Ng ve ark.) — metrik degisimi kaniti bozmaz.
         max_man = 2 * (self.n - 1)
         if max_man > 0 and not self.done:
-            phi_before = 1.0 - manhattan(pos_before, self.goal) / max_man
-            phi_after = 1.0 - manhattan(self.pos[agent], self.goal) / max_man
+            dmap = self._dist_map[agent]
+            d_before = dmap.get(pos_before, max_man)
+            d_after = dmap.get(self.pos[agent], max_man)
+            phi_before = 1.0 - d_before / max_man
+            phi_after = 1.0 - d_after / max_man
             shaping = SHAPING_COEF * (GAMMA * phi_after - phi_before)
             r_team += shaping
             r_ind[agent] += shaping
@@ -388,12 +409,17 @@ class MARLGridEnv:
         """
         self.forbidden = forbidden_from(tuple(self.path[AGENT_1]),
                                         self.s1, self.s2, self.goal)
-        d2 = bfs_dist(self.s2, self.goal, self.forbidden | self.walls, self.n)
+        blocked2 = self.forbidden | self.walls
+        d2 = bfs_dist(self.s2, self.goal, blocked2, self.n)
         info["forbidden_size"] = len(self.forbidden)
         if d2 is None:
             self._blocked = True
             self.done = True
             return R_BLOCKED
+        # A2'nin shaping haritasi: forbidden ARTIK SABIT (faz B boyunca
+        # degismez), bu yuzden burada BIR KEZ cikarilir (bkz. reset()'teki
+        # A1 icin ayni gerekce).
+        self._dist_map[AGENT_2] = bfs_distance_map(self.goal, blocked2, self.n)
         self.phase = 1
         self.phase_t = 0
         return 0.0
