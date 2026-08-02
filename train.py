@@ -23,7 +23,8 @@ from agents.dqn import DQNAgent
 from agents.qmix import QMixAgent
 from agents.vdn import VDNAgent
 from config import (AGENT_1, AGENT_2, DEMO_EPISODES, DEMO_SEED,
-                    DIFFICULTY_CSV, DQN_EPISODES, DQN_EVAL_EVERY, GRID_N,
+                    DIFFICULTY_CSV, DQN_EPISODES, DQN_EVAL_EVERY,
+                    EPS_FLOOR_FRAC, GRID_N,
                     IQL_BATCH, IQL_BUFFER, IQL_EPISODES, IQL_EPS_DECAY_STEPS,
                     IQL_EVAL_EVERY, IQL_LEARN_START, IQL_LR,
                     IQL_TARGET_UPDATE, QMIX_EPISODES, QMIX_EVAL_EVERY,
@@ -319,8 +320,14 @@ def train_iql(episodes: int = IQL_EPISODES, seed: int = SEED,
     harm_w = deque(maxlen=TRAIN_HARM_WINDOW)
     hard_harm_w = deque(maxlen=TRAIN_HARM_WINDOW)
 
+    best_success, best_ep = -1.0, None    # bkz. asagidaki "EN IYI checkpoint"
     t0 = time.time()
     for ep in range(1, episodes + 1):
+        # Epsilon EPISODE tabanli ilerler (bkz. config.py EPS_FLOOR_FRAC):
+        # --episodes ne olursa olsun taban hep ayni oranda gelir.
+        eps_frac = ep / max(1.0, episodes * EPS_FLOOR_FRAC)
+        agents[AGENT_1].set_eps_progress(eps_frac)
+        agents[AGENT_2].set_eps_progress(eps_frac)
         cfg = None          # uniform ornekleme (curriculum kaldirildi)
         info, _ = play_episode(env, agents, train=True, config=cfg)
         harm_w.append(bool(info.get("harmed")))
@@ -366,19 +373,31 @@ def train_iql(episodes: int = IQL_EPISODES, seed: int = SEED,
                   f"  zarar %{100*ev['harm_rate']:.2f}"
                   f"  zarar(zor) %{100*ev['hard_harm_rate']:.2f}", flush=True)
 
+            # EN IYI checkpoint (kanonik dosya — eval/demo bunu yukler).
+            # Eskiden SON checkpoint kaydediliyordu; egitim salinimli oldugu
+            # icin bu, zirveyi kacirip inisde yakalayabiliyordu (olculdu:
+            # iql_wall_medium ep3500'de %52 iken ep4000'de %40.5 kaydedildi).
+            if ev["success_rate"] > best_success:
+                best_success, best_ep = ev["success_rate"], ep
+                agents[AGENT_1].save(f"{RUNS_DIR}/ckpt/{tag}_agent1.pt")
+                agents[AGENT_2].save(f"{RUNS_DIR}/ckpt/{tag}_agent2.pt")
+
         if ep % 1000 == 0:
-            # Ara-checkpoint: run yarida kesilirse (ornegin elle durdurulursa)
-            # SON tam episode'daki agirliklar diskte kalsin, bellekte kaybolmasin.
-            # AYNI dosyaya yazar (final ile CAKISIR) — normal bitiste zaten
-            # asagidaki son save() bunun UZERINE yazacak, ekstra dosya yok.
-            agents[AGENT_1].save(f"{RUNS_DIR}/ckpt/{tag}_agent1.pt")
-            agents[AGENT_2].save(f"{RUNS_DIR}/ckpt/{tag}_agent2.pt")
+            # Ara-checkpoint: run yarida kesilirse SON tam episode'daki
+            # agirliklar kaybolmasin. AYRI dosyaya (_last) yaziliyor —
+            # yukaridaki "en iyi" kaydini EZMESIN diye.
+            agents[AGENT_1].save(f"{RUNS_DIR}/ckpt/{tag}_last_agent1.pt")
+            agents[AGENT_2].save(f"{RUNS_DIR}/ckpt/{tag}_last_agent2.pt")
 
     log_file.close()
     harm_file.close()
-    agents[AGENT_1].save(f"{RUNS_DIR}/ckpt/{tag}_agent1.pt")
-    agents[AGENT_2].save(f"{RUNS_DIR}/ckpt/{tag}_agent2.pt")
-    print(f"\nEgitim bitti: {time.time()-t0:.0f}s -> runs/ckpt/{tag}_agent{{1,2}}.pt")
+    agents[AGENT_1].save(f"{RUNS_DIR}/ckpt/{tag}_last_agent1.pt")
+    agents[AGENT_2].save(f"{RUNS_DIR}/ckpt/{tag}_last_agent2.pt")
+    if best_ep is None:      # hic eval calismadiysa (cok kisa run) fallback
+        agents[AGENT_1].save(f"{RUNS_DIR}/ckpt/{tag}_agent1.pt")
+        agents[AGENT_2].save(f"{RUNS_DIR}/ckpt/{tag}_agent2.pt")
+    print(f"\nEgitim bitti: {time.time()-t0:.0f}s -> runs/ckpt/{tag}_agent{{1,2}}.pt"
+          f"  (EN IYI: ep{best_ep}, basari %{100*best_success:.1f})")
 
     print("\n=== ASAMA 4 KABUL KRITERI (TAM 14.400 konfig) ===")
     ev = evaluate_iql(agents, env, all_configs, all_difficulty)
@@ -582,8 +601,11 @@ def train_vdn(episodes: int = VDN_EPISODES, seed: int = SEED,
 
     health_checked = False  # PLAN §Asama 5 saglik kontrolu, bkz. asagida
 
+    best_success, best_ep = -1.0, None    # bkz. asagidaki "EN IYI checkpoint"
     t0 = time.time()
     for ep in range(1, episodes + 1):
+        # Epsilon EPISODE tabanli ilerler (bkz. config.py EPS_FLOOR_FRAC).
+        agent.set_eps_progress(ep / max(1.0, episodes * EPS_FLOOR_FRAC))
         # d(s1,g)=1 olan konfigler (%13.3) FAZ A'yi TEK adimda bitirir — o
         # episode'u yakalarsak 1 olcumle "SABIT" diye yanlis alarm veririz.
         # ep>=200'den itibaren en az 3 olcum toplayan ILK episode'u kullan.
@@ -637,15 +659,22 @@ def train_vdn(episodes: int = VDN_EPISODES, seed: int = SEED,
                   f"  zarar %{100*ev['harm_rate']:.2f}"
                   f"  zarar(zor) %{100*ev['hard_harm_rate']:.2f}", flush=True)
 
+            # EN IYI checkpoint (kanonik dosya) — bkz. train_iql'deki ayni not.
+            if ev["success_rate"] > best_success:
+                best_success, best_ep = ev["success_rate"], ep
+                agent.save(f"{RUNS_DIR}/ckpt/{tag}.pt")
+
         if ep % 1000 == 0:
-            # Ara-checkpoint: run yarida kesilirse SON tam episode'daki
-            # agirliklar diskte kalsin. Ayni dosya, normal bitiste UZERINE yazilir.
-            agent.save(f"{RUNS_DIR}/ckpt/{tag}.pt")
+            # Ara-checkpoint AYRI dosyaya (_last): "en iyi" kaydini ezmesin.
+            agent.save(f"{RUNS_DIR}/ckpt/{tag}_last.pt")
 
     log_file.close()
     harm_file.close()
-    agent.save(f"{RUNS_DIR}/ckpt/{tag}.pt")
-    print(f"\nEgitim bitti: {time.time()-t0:.0f}s -> runs/ckpt/{tag}.pt")
+    agent.save(f"{RUNS_DIR}/ckpt/{tag}_last.pt")
+    if best_ep is None:      # hic eval calismadiysa fallback
+        agent.save(f"{RUNS_DIR}/ckpt/{tag}.pt")
+    print(f"\nEgitim bitti: {time.time()-t0:.0f}s -> runs/ckpt/{tag}.pt"
+          f"  (EN IYI: ep{best_ep}, basari %{100*best_success:.1f})")
 
     print("\n=== ASAMA 5 KABUL KRITERI (TAM 14.400 konfig) ===")
     ev = evaluate_vdn(agent, env, all_configs, all_difficulty)
@@ -758,8 +787,11 @@ def train_qmix(episodes: int = QMIX_EPISODES, seed: int = SEED,
 
     health_checked = False
 
+    best_success, best_ep = -1.0, None    # bkz. asagidaki "EN IYI checkpoint"
     t0 = time.time()
     for ep in range(1, episodes + 1):
+        # Epsilon EPISODE tabanli ilerler (bkz. config.py EPS_FLOOR_FRAC).
+        agent.set_eps_progress(ep / max(1.0, episodes * EPS_FLOOR_FRAC))
         probe = [] if (not health_checked and ep >= 200) else None
         cfg = None          # uniform ornekleme (curriculum kaldirildi)
         info, _ = play_episode_qmix(env, agent, train=True, config=cfg, health_probe=probe)
@@ -809,15 +841,22 @@ def train_qmix(episodes: int = QMIX_EPISODES, seed: int = SEED,
                   f"  zarar %{100*ev['harm_rate']:.2f}"
                   f"  zarar(zor) %{100*ev['hard_harm_rate']:.2f}", flush=True)
 
+            # EN IYI checkpoint (kanonik dosya) — bkz. train_iql'deki ayni not.
+            if ev["success_rate"] > best_success:
+                best_success, best_ep = ev["success_rate"], ep
+                agent.save(f"{RUNS_DIR}/ckpt/{tag}.pt")
+
         if ep % 1000 == 0:
-            # Ara-checkpoint: run yarida kesilirse SON tam episode'daki
-            # agirliklar diskte kalsin. Ayni dosya, normal bitiste UZERINE yazilir.
-            agent.save(f"{RUNS_DIR}/ckpt/{tag}.pt")
+            # Ara-checkpoint AYRI dosyaya (_last): "en iyi" kaydini ezmesin.
+            agent.save(f"{RUNS_DIR}/ckpt/{tag}_last.pt")
 
     log_file.close()
     harm_file.close()
-    agent.save(f"{RUNS_DIR}/ckpt/{tag}.pt")
-    print(f"\nEgitim bitti: {time.time()-t0:.0f}s -> runs/ckpt/{tag}.pt")
+    agent.save(f"{RUNS_DIR}/ckpt/{tag}_last.pt")
+    if best_ep is None:      # hic eval calismadiysa fallback
+        agent.save(f"{RUNS_DIR}/ckpt/{tag}.pt")
+    print(f"\nEgitim bitti: {time.time()-t0:.0f}s -> runs/ckpt/{tag}.pt"
+          f"  (EN IYI: ep{best_ep}, basari %{100*best_success:.1f})")
 
     print("\n=== ASAMA 7 KABUL KRITERI (TAM 14.400 konfig) ===")
     ev = evaluate_qmix(agent, env, all_configs, all_difficulty)

@@ -49,13 +49,27 @@ class DQNAgent:
         self.opt = torch.optim.Adam(self.online.parameters(), lr=lr)
         self.buffer = ReplayBuffer(buffer_size, obs_dim, n_actions, self.rng)
         self.steps = 0
+        self.eps_progress: float | None = None   # bkz. eps / set_eps_progress
 
     # ------------------------------------------------------------- politika
 
     @property
     def eps(self) -> float:
-        frac = min(1.0, self.steps / self.eps_decay_steps)
+        # eps_progress: egitim donugusunun her episode'da set ettigi 0..1
+        # ilerleme. ADIM tabanli decay (asagidaki fallback) egitim uzunlugunu
+        # DEGISTIRDIGIMIZDE sessizce yanlis kaliyordu: eps_decay_steps sabit
+        # oldugu icin, episode sayisini artirinca epsilon egitimin cok
+        # basinda tabana iniyor, azaltinca hic inmiyordu -- ustelik adim/
+        # episode orani ajanin ne kadar iyi navige ettigine gore de degisiyor
+        # (tavuk-yumurta). Episode tabanli ilerleme bu bagi tamamen koparir.
+        frac = (self.eps_progress if self.eps_progress is not None
+                else min(1.0, self.steps / self.eps_decay_steps))
         return EPS_START + frac * (EPS_END - EPS_START)
+
+    def set_eps_progress(self, frac: float | None):
+        """Egitim donugusu her episode cagirir: frac = ep / (episodes*FLOOR_FRAC),
+        1.0'da epsilon tabanda. None verilirse adim-tabanli eski davranisa doner."""
+        self.eps_progress = None if frac is None else min(1.0, max(0.0, frac))
 
     def act(self, obs: np.ndarray, mask: np.ndarray, eps: float | None = None) -> int:
         """Maskeye uyan epsilon-greedy secim. eps=0 -> deterministik greedy."""

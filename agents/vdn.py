@@ -120,13 +120,21 @@ class VDNAgent:
         self.opt = torch.optim.Adam(params, lr=lr)
         self.buffer = JointReplayBuffer(buffer_size, obs_dim, n_actions, self.rng)
         self.steps = 0
+        self.eps_progress: float | None = None   # bkz. eps / set_eps_progress
 
     # ------------------------------------------------------------- politika
 
     @property
     def eps(self) -> float:
-        frac = min(1.0, self.steps / self.eps_decay_steps)
+        # bkz. agents/dqn.py'deki ayni metodun notu (episode-tabanli ilerleme,
+        # adim-tabanli decay'in egitim uzunluguna gore sessizce bozulmasi).
+        frac = (self.eps_progress if self.eps_progress is not None
+                else min(1.0, self.steps / self.eps_decay_steps))
         return EPS_START + frac * (EPS_END - EPS_START)
+
+    def set_eps_progress(self, frac: float | None):
+        """bkz. agents/dqn.py'deki ayni metod."""
+        self.eps_progress = None if frac is None else min(1.0, max(0.0, frac))
 
     def act(self, agent_id: int, obs: np.ndarray, mask: np.ndarray,
            eps: float | None = None) -> int:

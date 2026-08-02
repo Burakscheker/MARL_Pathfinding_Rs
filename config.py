@@ -106,6 +106,12 @@ LEARN_EVERY = 8
 
 # ---------------------------------------------------------------- MARL (Asama 4+)
 EPS_START, EPS_END, EPS_DECAY_STEPS = 1.0, 0.05, 50_000
+
+# Epsilon egitimin bu KESRINDE tabana (EPS_END) iner. Episode tabanli, yani
+# *_EPS_DECAY_STEPS sabitlerinden BAGIMSIZ: --episodes ne verilirse verilsin
+# taban hep ayni oranda gelir. Eski adim-tabanli decay egitim uzunlugunu
+# degistirince sessizce yanlis kaliyordu (bkz. agents/dqn.py eps notu).
+EPS_FLOOR_FRAC = 0.5
 BUFFER_EPISODES = 5_000
 BATCH_EPISODES = 32
 TARGET_UPDATE_EVERY = 200      # episode
@@ -222,10 +228,20 @@ PATCH_RADIUS = 10              # pencere boyutu = (2*10+1)^2 = 21x21
 PATCH_SIZE = 2 * PATCH_RADIUS + 1
 
 OBS_CHANNELS = 2                # yerel: [yasak_bolge, kendi_izi]
-N_SCALARS = 11                  # agent_id, faz, t/max, own_row, own_col,
+# 11 -> 16: son 5 skalar ENGEL-FARKINDA BFS mesafeleri (kendi hucre + 4 komsu).
+# GEREKCE (olculdu): onceki 11 skalarin hedefe dair TUM yon bilgisi duz-cizgi
+# (Manhattan) idi. A2'nin adimlarinin %17.8'inde duz-cizgi yonu GERCEK optimal
+# yonle celisiyordu, ve durumlarin %18.1'inde engel 21x21 yerel pencerenin
+# TAMAMEN disindaydi -- yani ajan yanlis yonlendiriliyor ve bunu duzeltecek
+# hicbir bilgisi yok. Bu 5 skalar "hangi komsu hedefe GERCEKTEN yaklastiriyor"
+# sorusunu dogrudan cevaplar. Maliyeti ~sifir: bfs_distance_map zaten reward
+# shaping icin hesaplaniyor (episode basina en fazla 2 kez), burada sadece
+# sozlukten O(1) okunuyor.
+N_SCALARS = 16                  # agent_id, faz, t/max, own_row, own_col,
                                 # dx_hedef, dy_hedef, dist_hedef, dx_diger,
-                                # dy_diger, dist_diger  (hepsi normalize)
-OBS_DIM = OBS_CHANNELS * PATCH_SIZE * PATCH_SIZE + N_SCALARS   # 893
+                                # dy_diger, dist_diger,
+                                # bfs_own, bfs_yukari, bfs_sag, bfs_asagi, bfs_sol
+OBS_DIM = OBS_CHANNELS * PATCH_SIZE * PATCH_SIZE + N_SCALARS   # 898
 
 STATE_CHANNELS = 2              # yerel: [A1 cevresi yasak-bolge, A2 cevresi yasak-bolge]
 STATE_SCALARS = 8               # A1_row,A1_col,A2_row,A2_col,goal_row,goal_col,faz,t/max

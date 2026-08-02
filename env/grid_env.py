@@ -233,6 +233,29 @@ class MARLGridEnv:
         ch = np.stack([forb_patch, visited_patch])
 
         max_man = 2 * (n - 1)
+
+        # ENGEL-FARKINDA yon bilgisi (bkz. config.py N_SCALARS notu).
+        # Yukaridaki dx/dy/dist skalarlari DUZ CIZGI (Manhattan) — engelin
+        # etrafindan hangi taraftan dolasilacagini SOYLEMEZ. Bu 5 deger
+        # BFS mesafe haritasindan okunuyor: kendi hucre + 4 komsu. Ajan
+        # boylece "hangi komsu hedefe GERCEKTEN yaklastiriyor" bilgisini
+        # dogrudan goruyor.
+        # FAZ A'da A2'nin kendi haritasi (walls+forbidden) HENUZ YOK —
+        # yasak bolge daha sabitlenmedi (_close_phase_a'da olusuyor).
+        # O ana kadar A1'in duvar-tabanli haritasina dusuluyor: A2 pasif
+        # (golge NOOP) oldugu icin kararlarini etkilemez, ama gozlem boyutu
+        # ve olcegi tutarli kalir.
+        dmap = self._dist_map.get(agent) or self._dist_map[AGENT_1]
+
+        def _nd(cell) -> float:
+            """Normalize BFS mesafesi; ulasilamaz/engel = 1.0 (mumkun en kotu)."""
+            d = dmap.get(cell)
+            return 1.0 if d is None else min(1.0, d / max_man)
+
+        bfs_feats = [_nd(own)]
+        for dr, dc in DIRS:
+            bfs_feats.append(_nd((own[0] + dr, own[1] + dc)))
+
         scalars = np.array([
             float(agent),
             float(self.phase),
@@ -242,6 +265,7 @@ class MARLGridEnv:
             manhattan(own, self.goal) / max_man,
             (other[0] - own[0]) / n, (other[1] - own[1]) / n,
             manhattan(own, other) / max_man,
+            *bfs_feats,
         ], dtype=np.float32)
         return np.concatenate([ch.ravel(), scalars])
 
