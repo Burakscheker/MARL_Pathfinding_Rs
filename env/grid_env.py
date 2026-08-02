@@ -247,14 +247,24 @@ class MARLGridEnv:
         # ve olcegi tutarli kalir.
         dmap = self._dist_map.get(agent) or self._dist_map[AGENT_1]
 
-        def _nd(cell) -> float:
-            """Normalize BFS mesafesi; ulasilamaz/engel = 1.0 (mumkun en kotu)."""
-            d = dmap.get(cell)
-            return 1.0 if d is None else min(1.0, d / max_man)
+        # KODLAMA NOTU: komsulari MUTLAK normalize mesafe olarak vermek ise
+        # yaramiyor -- 5 deger de birbirine neredeyse esit cikiyor (olculdu:
+        # [0.337, 0.327, 0.347, 0.347, 0.327]), ayirt edici fark sadece
+        # 1/max_man ~ %1. Ag bu %1'lik farki yakalamak zorunda kaliyor.
+        # Onun yerine KOMSU FARKI veriliyor: d_own - d_komsu, yani +1 = bu
+        # komsu bir adim YAKIN, -1 = bir adim UZAK. Yuksek kontrastli, dogrudan
+        # aksiyon secimine karsilik gelen sinyal. Kendi mutlak mesafe ayrica
+        # baglam olarak kaliyor (hedefe ne kadar kaldi).
+        d_own = dmap.get(own)
+        own_norm = 1.0 if d_own is None else min(1.0, d_own / max_man)
 
-        bfs_feats = [_nd(own)]
+        bfs_feats = [own_norm]
         for dr, dc in DIRS:
-            bfs_feats.append(_nd((own[0] + dr, own[1] + dc)))
+            d_nb = dmap.get((own[0] + dr, own[1] + dc))
+            if d_nb is None or d_own is None:
+                bfs_feats.append(-1.0)      # ulasilamaz/engel: mumkun en kotu
+            else:
+                bfs_feats.append(float(d_own - d_nb))   # +1 yakin, -1 uzak
 
         scalars = np.array([
             float(agent),
@@ -448,8 +458,28 @@ class MARLGridEnv:
         self.phase_t = 0
         return 0.0
 
+    def _wall_only_dist(self, cell: Cell) -> int:
+        """cell -> hedef, SADECE duvarlardan kacinarak (A1'in izi HARIC).
+
+        "A1 hic olmasaydi kac adim gerekirdi" referansi. self._dist_map[AGENT_1]
+        reset()'te hedeften duvarlarla BFS ile cikariliyor; ayni harita hem A1
+        hem A2 icin gecerli (ikisinin de statik engeli sadece duvarlar).
+        Duvar yokken bu deger Manhattan'a BIREBIR esittir -- yani duvarsiz
+        kosularda davranis DEGISMEZ.
+        """
+        d = self._dist_map[AGENT_1].get(cell)
+        return manhattan(cell, self.goal) if d is None else d
+
     def _finish(self, info: dict) -> float:
-        """A2 hedefe vardi: optimallik cezasini SERBEST Manhattan'a gore yaz.
+        """A2 hedefe vardi: optimallik cezasini DUVAR-FARKINDA optimuma gore yaz.
+
+        BUG (bulundu ve duzeltildi): referans eskiden serbest Manhattan'di,
+        yani duvarlari YOK SAYIYORDU. Duvar modunda A2'nin mecburen yaptigi
+        her dolasma "zarar" olarak yaziliyordu -- olculdu: A2 gercekte TAM
+        optimal giderken (duvar-farkinda gap +0.00) serbest-Manhattan olcutu
+        ortalama +2.85 gap ve %52.5 zarar raporluyordu. Zarar orani projenin
+        ASIL arastirma metrigi ("A1, A2'yi engelledi mi") oldugu icin bu,
+        duvarli tum sonuclari kullanilamaz kiliyordu.
 
         BUYUK GRID NOTU (100x100): 5x5'te bu ceza `oracle()`'in TUM optimal
         A1 yollarini enumerate edip bulduğu EN IYI erisilebilir A2 uzunluguna
@@ -464,8 +494,7 @@ class MARLGridEnv:
         """
         self.done = True
         len2 = len(self.path[AGENT_2]) - 1
-        free_len2 = manhattan(self.s2, self.goal)
-        gap2 = max(0, len2 - free_len2)
+        gap2 = max(0, len2 - self._wall_only_dist(self.s2))
         return R_OPT_GAP * gap2
 
     def _terminal_info(self) -> dict:
@@ -473,8 +502,11 @@ class MARLGridEnv:
         len2 = len(self.path[AGENT_2]) - 1
         reached1 = self.pos[AGENT_1] == self.goal
         reached2 = self.pos[AGENT_2] == self.goal
-        opt1 = manhattan(self.s1, self.goal)
-        free_len2 = manhattan(self.s2, self.goal)
+        # DUVAR-FARKINDA referanslar (bkz. _wall_only_dist / _finish notu):
+        # "A1 hic olmasaydi kac adim gerekirdi". Duvarsizken Manhattan'a
+        # birebir esit, yani duvarsiz kosularin metrikleri DEGISMEZ.
+        opt1 = self._wall_only_dist(self.s1)
+        free_len2 = self._wall_only_dist(self.s2)
         max_man = 2 * (self.n - 1)
         # Zorluk etiketi artik ENUMERATE ETMEDEN, basit bir mesafe esigiyle
         # (PLAN §0.4'un ampirik bulgusu: zorluk d1 buyudukce artiyor). Kesin
