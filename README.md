@@ -1,6 +1,7 @@
 # MARL Pathfinding
 
-5x5 gridde iki ajanlı sıralı yol bulma, Multi-Agent RL (IQL / VDN / QMIX).
+50x50 gridde iki ajanlı sıralı yol bulma, Multi-Agent RL (IQL / VDN / QMIX).
+İsteğe bağlı statik engel (duvar) zorluk modları: `easy` / `medium` / `hard`.
 
 Her episode'da `start1`, `start2` ve **ortak** `goal` rastgele seçilir.
 Önce Ajan 1 hedefe gider; geçtiği hücreler **yasak bölge** olur; sonra Ajan 2
@@ -8,6 +9,106 @@ o bölgeye girmeden aynı hedefe gider. Ajan 1 kendi optimalliğinden ödün
 vermeden Ajan 2'ye yer bırakmayı öğrenmelidir.
 
 Tam plan, ölçülmüş istatistikler ve aşama aşama yol haritası: **[PLAN.md](PLAN.md)**
+
+## Algoritma nasıl çalışıyor (pseudo kod)
+
+### 1. Episode akışı
+
+```
+episode_oynat(s1, s2, hedef, zorluk):
+    duvarlar = duvar_kur(s1, hedef) + duvar_kur(s2, hedef)   # 5 / 7 / 11 hücre
+    if BFS ile iki ajan da hedefe varamıyorsa:
+        duvarlar = {}                     # çözümsüz config üretme
+    yasak_bölge = {}
+
+    # ---- FAZ A: sadece A1 hareket eder ----
+    while A1 hedefe varmadı ve faz_adımı < 140:
+        a = A1.aksiyon_seç(gözlem(A1))
+        A1'i hareket ettir
+        A2 "gölge NOOP" basar             # hareket etmez ama Q değeri hesaplanır
+
+    yasak_bölge = A1'in geçtiği hücreler - {s1, s2, hedef}
+
+    # ---- FAZ B: sadece A2 hareket eder ----
+    while A2 hedefe varmadı ve faz_adımı < 140:
+        a = A2.aksiyon_seç(gözlem(A2))    # duvarlara VE yasak_bölgeye giremez
+        A2'yi hareket ettir
+```
+
+A1 zaman aşımına uğrasa bile FAZ B başlar (yasak bölge A1'in kısmi izinden
+sabitlenir) — aksi halde A1 başarısız olduğu her episode'da A2 hiç eğitim
+verisi göremezdi.
+
+### 2. Ajanın gözlemi (`OBS_DIM = 898`)
+
+```
+gözlem(ajan) = [
+    21x21 pencere : etraftaki duvarlar + yasak bölge,
+    21x21 pencere : kendi geçtiği hücreler,
+    11 skaler     : ajan_id, faz, zaman, kendi konumu,
+                    hedefe düz-çizgi farkı, diğer ajana fark, ...,
+    BFS_kendi_mesafe,                     # hedefe GERÇEK (engel-farkında) uzaklık
+    BFS_fark[yukarı, sağ, aşağı, sol]     # +1 = bir adım yakınlaştırır
+                                          # -1 = uzaklaştırır / engel
+]
+```
+
+Son 5 skaler kritik: onlarsız ajan yalnızca **düz-çizgi** yön bilgisi görüyor
+ve engelin etrafından hangi taraftan dolaşacağını bilemiyordu (ölçüldü:
+adımların %17.8'inde düz-çizgi yönü gerçek optimal yönle çelişiyor).
+
+### 3. Ödül
+
+```
+her adım                    : -0.05          # acele et
+duvara/yasak hücreye hamle  : -0.10
+daha önce geçtiği hücre     : -0.05          # git-gel önleme
+kendi hedefine varış        : +10
+İKİSİ de vardı              : +30            # TAKIM
+süre doldu                  : -10
+A2 kilitlendi (BFS)         : -3             # TAKIM
+A2 optimalden uzun gitti    : -0.5 x fazla_adım   # TAKIM
+
++ her adımda potansiyel-tabanlı shaping:
+      20 x (γ·Φ(s') - Φ(s)),  Φ = 1 - BFS_mesafe/max_mesafe
+  (optimal politikayı değiştirmez — Ng, Harada, Russell 1999)
+```
+
+### 4. Öğrenme çekirdeği (üçünde de aynı: Double DQN)
+
+```
+her adımda:
+    tekrar_belleğine_yaz(gözlem, aksiyon, ödül, sonraki_gözlem, maske)
+
+her 8 adımda bir:
+    32 rastgele geçmiş deneyim çek
+    en_iyi_a' = argmax Q_online(sonraki, ·)           # aksiyonu ONLINE seçer
+    hedef     = ödül + γ · Q_target(sonraki, en_iyi_a')   # değeri TARGET biçer
+    kayıp     = (Q_online(gözlem, aksiyon) - hedef)²
+    gradyan adımı + gradyan kırpma
+```
+
+### 5. Üç algoritmanın TEK farkı: TD hatası kime yayılıyor
+
+```
+IQL   : Q1 ve Q2 tamamen AYRI eğitilir, her biri kendi r_ind'iyle.
+        r_ind = adım maliyeti + kendi hedef bonusu (TAKIM cezaları YOK).
+        -> A1, "A2'yi engelledim" sinyalini hiç görmez.
+
+VDN   : Q_toplam = Q1(o1,a1) + Q2(o2,a2)
+        kayıp = (Q_toplam - TAKIM_ödülü)²
+        -> TEK hata ikisine BİRDEN yayılır, A1 kilitleme cezasını hisseder.
+
+QMIX  : Q_toplam = Mixer(Q1, Q2 | global_durum)
+        Mixer ağırlıkları hypernetwork ile global durumdan üretilir,
+        abs() ile pozitif tutulur (monotonluk garantisi).
+        -> VDN'in "sadece toplama" kısıtını gevşetir.
+```
+
+**Gölge NOOP neden önemli:** FAZ A boyunca A2 hareket etmez ama her adımda
+gözlem üretip NOOP basar, Q değeri toplama girer. Böylece "A1 şu hücreye
+girince A2'nin durumu kötüleşti" bilgisi gradyanla A1'e geri akabilir.
+IQL'de bu kanal yapısal olarak yoktur — projenin test ettiği asıl hipotez budur.
 
 ## Kurulum
 
