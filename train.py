@@ -295,10 +295,10 @@ def train_iql(episodes: int = IQL_EPISODES, seed: int = SEED,
     curriculum KALDIRILDI, bkz. train_vdn'deki ayni not.
 
     obstacle_difficulty: None (varsayilan, engelsiz) / "easy"/"medium"/"hard"
-    -- MARLGridEnv'e statik duvar zorlugu olarak gecirilir (bkz. config.py
-    WALL_WIDTHS). "difficulty" (tekil) adini KASITLI KULLANMADIK: bu
-    fonksiyonda zaten mesafe-tabanli hard/easy ETIKETLERI (all_difficulty,
-    quick_difficulty) var, isim karismasin diye.
+    -- MARLGridEnv'e engel zorlugu olarak gecirilir (bkz. env/obstacles.py).
+    "difficulty" (tekil) adini KASITLI KULLANMADIK: bu fonksiyonda zaten
+    mesafe-tabanli hard/easy ETIKETLERI (all_difficulty, quick_difficulty)
+    var, isim karismasin diye.
 
     init_from: None (varsayilan, sifirdan rastgele agirlik) / bir tag
     ("nowall_final" gibi) -- verilirse egitim BASLAMADAN once o tag'in
@@ -918,8 +918,8 @@ if __name__ == "__main__":
     p.add_argument("--no-demo", action="store_true",
                     help="iql/vdn icin: egitim sonrasi 10-episode gosterim+grafik adimini atla")
     p.add_argument("--difficulty", default=None, choices=["easy", "medium", "hard"],
-                    help="statik duvar zorlugu (bkz. config.py WALL_WIDTHS); "
-                         "verilmezse duvarsiz (eski davranis)")
+                    help="engel zorlugu (bkz. env/obstacles.py); "
+                         "verilmezse engelsiz (eski davranis)")
     p.add_argument("--init-from", default=None,
                     help="sifirdan degil, bu tag'in checkpoint'inden (transfer/"
                          "warm-start) basla -- epsilon sifirlanir, agirliklar korunur")

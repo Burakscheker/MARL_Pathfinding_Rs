@@ -18,15 +18,6 @@ ACTION_NAMES = ("UP", "RIGHT", "DOWN", "LEFT", "NOOP")
 # (d_satir, d_sutun) — NOOP dahil degil, o ayri ele aliniyor
 DIRS = ((-1, 0), (0, 1), (1, 0), (0, -1))
 
-# ---------------------------------------------------------------- statik engeller (zorluk modu)
-# Zorluk secilirse, HER ajanin baslangici ile hedef arasina, o dogrultunun
-# BASKIN eksenine DIK, sabit genislikte bir duvar konur (agent_env.py
-# _build_wall()). Genislik GRID_N'den kucuk oldugu icin duvar en fazla TEK
-# kenara deger — geometrik olarak her zaman dolanilabilir bir bosluk kalir.
-# Iki ajanin duvarlari (nadiren) birlesip hedefi sarabilecegi icin reset()
-# ayrica BFS ile dogrular; cozulemezse o episode icin duvarlar KAPATILIR
-# (config'in kendisi ASLA degistirilmez).
-WALL_WIDTHS = {"easy": 5, "medium": 7, "hard": 10}
 
 # Faz basina adim limiti. 50x50'de en uzun optimal yol 98 (49+49);
 # egitimin ilk asamalarinda politika henuz yon bulmayi ogrenmemisken biraz

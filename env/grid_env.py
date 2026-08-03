@@ -24,7 +24,7 @@ from config import (AGENT_1, AGENT_2, ALLOW_SAME_START, DIRS, GAMMA, GRID_N,
                     MAX_STEPS_PER_PHASE, MAX_STEPS_TOTAL, NOOP, N_ACTIONS,
                     OBS_DIM, PATCH_RADIUS, R_AGENT_GOAL, R_BLOCKED,
                     R_BOTH_GOAL, R_INVALID, R_OPT_GAP, R_REVISIT, R_STEP,
-                    R_TIMEOUT, SHAPING_COEF, STATE_DIM, WALL_WIDTHS)
+                    R_TIMEOUT, SHAPING_COEF, STATE_DIM)
 from env.obstacles import ObstacleConfig, generate_obstacle_config
 
 Cell = tuple[int, int]
@@ -46,8 +46,8 @@ class MARLGridEnv:
                  seed: Optional[int] = None,
                  difficulty: Optional[str] = None):
         """difficulty: None (varsayilan, engelsiz), "easy"/"medium"/"hard"
-        (bkz. config.py WALL_WIDTHS) -- her ajanin baslangicindan hedefe
-        DIK, o genislikte statik bir duvar ekler."""
+        (bkz. env/obstacles.py) -- verilirse reset() haritayi motif/labirent
+        tabanli uretecten alir (basit "easy" -> uretecin "basic" adi)."""
         self.n = n
         self.max_steps_per_phase = max_steps_per_phase
         self.max_steps_total = 2 * max_steps_per_phase
@@ -69,32 +69,6 @@ class MARLGridEnv:
             if not self.allow_same_start and s1 == s2:
                 continue
             return s1, s2, g
-
-    def _build_wall(self, start: Cell, goal: Cell, width: int) -> frozenset:
-        """start-hedef ortasinda, BASKIN eksene DIK, width genisliginde duvar.
-
-        Orta nokta = start + (goal-start)/2 (tam sayi bolme). Baskin eksen =
-        satir farki >= sutun farki ise YATAY duvar (satir sabit, sutunlar
-        boyunca genisler); degilse DIKEY duvar (sutun sabit, satirlar boyunca
-        genisler) — 4-yonlu grid'de gercek "vektore dik" cizginin tek duzgun
-        (delik-siz) temsili budur, capraz bir cizgi kose-sizmasina acik olurdu.
-
-        width < GRID_N oldugu icin sinira tasan uc kirpilir (clip), duvar
-        boylece en fazla TEK kenara deger — oteki taraf HER ZAMAN acik kalir.
-        """
-        mr, mc = (start[0] + goal[0]) // 2, (start[1] + goal[1]) // 2
-        dr, dc = abs(start[0] - goal[0]), abs(start[1] - goal[1])
-        half = width // 2
-        cells: set[Cell] = set()
-        if dr >= dc:
-            for c in range(mc - half, mc + half + 1):
-                if 0 <= c < self.n:
-                    cells.add((mr, c))
-        else:
-            for r in range(mr - half, mr + half + 1):
-                if 0 <= r < self.n:
-                    cells.add((r, mc))
-        return frozenset(cells)
 
     # -------------------------------------------------------------- reset
 
