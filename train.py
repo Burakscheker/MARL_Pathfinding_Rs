@@ -27,7 +27,8 @@ from config import (AGENT_1, AGENT_2, DEMO_EPISODES, DEMO_SEED,
                     EPS_FLOOR_FRAC, GRID_N,
                     IQL_BATCH, IQL_BUFFER, IQL_EPISODES, IQL_EPS_DECAY_STEPS,
                     IQL_EVAL_EVERY, IQL_LEARN_START, IQL_LR,
-                    IQL_TARGET_UPDATE, QMIX_EPISODES, QMIX_EVAL_EVERY,
+                    IQL_TARGET_UPDATE, MAX_STEPS_PER_PHASE,
+                    QMIX_EPISODES, QMIX_EVAL_EVERY,
                     RUNS_DIR, SEED, TRAIN_HARM_LOG_EVERY, TRAIN_HARM_WINDOW,
                     VDN_EVAL_EVERY, VDN_EPISODES)
 from env.grid_env import MARLGridEnv
@@ -151,7 +152,38 @@ def train_dqn(episodes: int = DQN_EPISODES, seed: int = SEED,
 
 # ==================================================================== IQL
 
-def load_all_configs(n_samples: int = 1_000) -> tuple[list, list]:
+def load_obstacle_configs(obstacle_difficulty: str, n_maps: int = 1_000) -> tuple[list, list]:
+    """Engel modu icin SABIT degerlendirme haritalari (map_seed = 0..n_maps-1).
+
+    Egitimde her episode TAZE harita uretilir (env.reset'te rastgele map_seed),
+    degerlendirmede ise sabit tohumlar kullanilir -- boylece her algoritma
+    BIREBIR ayni haritalarda olculur. Uretec her haritayi BFS ile dogruladigi
+    icin cozumsuz konfig gelmez.
+
+    Zorluk etiketi (hard/easy) = DOLAMBAC ORANI >= 1.5, yani engellerin A1'i
+    optimalden ne kadar saptirdigi. grid_env._terminal_info'daki is_hard ile
+    AYNI olcut (oradaki gerekceye bak: eski mesafe esigi bu haritalarda
+    hicbir konfigi "zor" saymiyordu). Engel zorlugundan (basic/medium/hard)
+    AYRI bir eksen.
+    """
+    from env.obstacles import generate_obstacle_config
+    from env.grid_env import OBSTACLE_DIFFICULTY_ALIAS
+    from baselines.bfs_oracle import bfs_dist, manhattan
+    name = OBSTACLE_DIFFICULTY_ALIAS.get(obstacle_difficulty, obstacle_difficulty)
+    configs, difficulty = [], []
+    for i in range(n_maps):
+        c = generate_obstacle_config(name, map_seed=i, n=GRID_N,
+                                     max_steps=MAX_STEPS_PER_PHASE)
+        configs.append(c)
+        man1 = manhattan(c.start1, c.goal)
+        d1 = bfs_dist(c.start1, c.goal, c.obstacles, GRID_N)
+        ratio = (d1 / man1) if (d1 is not None and man1 > 0) else 1.0
+        difficulty.append("hard" if ratio >= 1.5 else "easy")
+    return configs, difficulty
+
+
+def load_all_configs(n_samples: int = 1_000,
+                     obstacle_difficulty: str | None = None) -> tuple[list, list]:
     """Kucuk N'de (5x5 gibi) Asama 2'nin TAM tarama dosyasindan (difficulty.csv)
     KESIN kovalar okunur — IQL'in Asama 4 kabul kriteri bu sekilde Asama 2'nin
     dogruluk zeminiyle AYNI konfig uzayina karsi olculur.
@@ -162,6 +194,9 @@ def load_all_configs(n_samples: int = 1_000) -> tuple[list, list]:
     n_samples kadar konfig + etiket uretilir. Kesin degil ama enumerate
     gerektirmez.
     """
+    if obstacle_difficulty is not None:
+        return load_obstacle_configs(obstacle_difficulty, n_samples)
+
     if GRID_N <= 20 and os.path.exists(DIFFICULTY_CSV):
         configs, difficulty = [], []
         with open(DIFFICULTY_CSV, encoding="utf-8") as f:
@@ -291,7 +326,8 @@ def train_iql(episodes: int = IQL_EPISODES, seed: int = SEED,
             print(f"  init_from={init_from}: agirliklar VE epsilon/adim sayaci "
                   f"yuklendi (resume, steps={agents[AGENT_1].steps})")
 
-    all_configs, all_difficulty = load_all_configs()
+    all_configs, all_difficulty = load_all_configs(
+        obstacle_difficulty=obstacle_difficulty)
     rng = np.random.default_rng(seed + 999)
     quick_idx = rng.choice(len(all_configs), size=quick_eval_n, replace=False)
     quick_configs = [all_configs[i] for i in quick_idx]
@@ -575,7 +611,8 @@ def train_vdn(episodes: int = VDN_EPISODES, seed: int = SEED,
             print(f"  init_from={init_from}: agirliklar VE epsilon/adim sayaci "
                   f"yuklendi (resume, steps={agent.steps})")
 
-    all_configs, all_difficulty = load_all_configs()
+    all_configs, all_difficulty = load_all_configs(
+        obstacle_difficulty=obstacle_difficulty)
     rng = np.random.default_rng(seed + 999)
     quick_idx = rng.choice(len(all_configs), size=quick_eval_n, replace=False)
     quick_configs = [all_configs[i] for i in quick_idx]
@@ -761,7 +798,8 @@ def train_qmix(episodes: int = QMIX_EPISODES, seed: int = SEED,
             print(f"  init_from={init_from}: agirliklar VE epsilon/adim sayaci "
                   f"yuklendi (resume, steps={agent.steps})")
 
-    all_configs, all_difficulty = load_all_configs()
+    all_configs, all_difficulty = load_all_configs(
+        obstacle_difficulty=obstacle_difficulty)
     rng = np.random.default_rng(seed + 999)
     quick_idx = rng.choice(len(all_configs), size=quick_eval_n, replace=False)
     quick_configs = [all_configs[i] for i in quick_idx]

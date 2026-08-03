@@ -92,7 +92,9 @@ def main(vdn_tag: str = "vdn_final", qmix_tag: str = "qmix_final",
     -- yoksa duvarli egitilmis bir model duvarsiz ortamda (ya da tam tersi)
     degerlendirilir, sonuclar egitim kosuluyla tutarsiz olur."""
     env = MARLGridEnv(seed=0, difficulty=obstacle_difficulty)
-    configs, difficulty = load_all_configs()
+    # Engel modunda konfigler SABIT tohumlu haritalardan gelir (map_seed
+    # 0..n-1) — her politika BIREBIR ayni haritalarda olculsun diye.
+    configs, difficulty = load_all_configs(obstacle_difficulty=obstacle_difficulty)
     if len(configs) > n_eval:
         idx = __import__("numpy").random.default_rng(0).choice(
             len(configs), size=n_eval, replace=False)

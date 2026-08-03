@@ -25,8 +25,12 @@ from config import (AGENT_1, AGENT_2, ALLOW_SAME_START, DIRS, GAMMA, GRID_N,
                     OBS_DIM, PATCH_RADIUS, R_AGENT_GOAL, R_BLOCKED,
                     R_BOTH_GOAL, R_INVALID, R_OPT_GAP, R_REVISIT, R_STEP,
                     R_TIMEOUT, SHAPING_COEF, STATE_DIM, WALL_WIDTHS)
+from env.obstacles import ObstacleConfig, generate_obstacle_config
 
 Cell = tuple[int, int]
+
+# CLI/tag'lerimiz "easy" kullaniyor, uretecin karsiligi "basic".
+OBSTACLE_DIFFICULTY_ALIAS = {"easy": "basic"}
 
 
 class MARLGridEnv:
@@ -94,11 +98,41 @@ class MARLGridEnv:
 
     # -------------------------------------------------------------- reset
 
-    def reset(self, config: Optional[tuple[Cell, Cell, Cell]] = None,
-              seed: Optional[int] = None) -> dict[int, np.ndarray]:
+    def reset(self, config=None, seed: Optional[int] = None,
+              map_seed: Optional[int] = None) -> dict[int, np.ndarray]:
+        """config: (s1, s2, goal) UCLUSU ya da bir ObstacleConfig.
+
+        ENGEL MODU (self.difficulty verilmisse): harita env/obstacles.py'nin
+        uretecinden gelir ve baslangic/hedef konumlari da HARITAYLA BIRLIKTE
+        uretilir (uretec bunlari haritanin gecitlerine gore secer, sonradan
+        rastgele serpistirmez). Uretec her haritayi BFS ile dogrular: A1 faz
+        limitinde hedefe varabilmeli VE A1'in izi sabitlendikten sonra A2 de
+        varabilmeli -- yani cozumsuz episode uretilmez.
+
+        map_seed verilirse O haritayi deterministik uretir (degerlendirme
+        icin: her algoritma AYNI haritalarda olculur). Verilmezse env'in
+        kendi rng'sinden rastgele bir harita cekilir (egitim icin: her
+        episode taze harita, ezberlenecek sabit havuz yok). Uretim maliyeti
+        olculdu: harita basina 0.006-0.019s, 6000 episode'a ~0.5-2 dk ekler.
+        """
         if seed is not None:
             self.rng = np.random.default_rng(seed)
-        self.s1, self.s2, self.goal = config if config is not None else self.sample_config()
+
+        obstacle_cfg = config if isinstance(config, ObstacleConfig) else None
+        if obstacle_cfg is None and self.difficulty is not None and config is None:
+            if map_seed is None:
+                map_seed = int(self.rng.integers(0, 2**31 - 1))
+            obstacle_cfg = generate_obstacle_config(
+                OBSTACLE_DIFFICULTY_ALIAS.get(self.difficulty, self.difficulty),
+                map_seed=map_seed, n=self.n,
+                max_steps=self.max_steps_per_phase)
+
+        if obstacle_cfg is not None:
+            self.s1, self.s2, self.goal = (obstacle_cfg.start1,
+                                          obstacle_cfg.start2, obstacle_cfg.goal)
+        else:
+            self.s1, self.s2, self.goal = (config if config is not None
+                                           else self.sample_config())
 
         self.pos = {AGENT_1: self.s1, AGENT_2: self.s2}
         self.path = {AGENT_1: [self.s1], AGENT_2: [self.s2]}
@@ -107,19 +141,11 @@ class MARLGridEnv:
         # Muaf hucreler — PLAN §1'in kritik kurali
         self.exempt = frozenset({self.s1, self.s2, self.goal})
 
-        # Statik engeller (zorluk modu) — bkz. __init__ ve config.py WALL_WIDTHS.
-        self.walls: frozenset = frozenset()
-        if self.difficulty is not None:
-            width = WALL_WIDTHS[self.difficulty]
-            candidate = (self._build_wall(self.s1, self.goal, width)
-                        | self._build_wall(self.s2, self.goal, width)) - self.exempt
-            # Tek duvar geometrik olarak HER ZAMAN dolanilabilir (genislik <
-            # GRID_N), ama IKI ajanin duvari BIRLESIP hedefi sarabilir --
-            # bunu BFS ile dogrula. Cozulemezse config'i DEGISTIRME, sadece
-            # bu episode icin duvarlari kapat.
-            if (bfs_dist(self.s1, self.goal, candidate, self.n) is not None
-                    and bfs_dist(self.s2, self.goal, candidate, self.n) is not None):
-                self.walls = candidate
+        # Statik engeller. Uretec bunlari zaten dogruladi (cozulebilirlik
+        # garanti), o yuzden burada ekstra BFS kontrolu YOK.
+        self.walls: frozenset = (obstacle_cfg.obstacles - self.exempt
+                                 if obstacle_cfg is not None else frozenset())
+        self.obstacle_cfg = obstacle_cfg   # subtype/map_seed gorsellestirme icin
 
         # Duvar-farkinda shaping icin hedeften TEK BFS ile mesafe haritasi
         # (bkz. step()'teki shaping bloku). FAZ A boyunca A1'in tek engeli
@@ -508,11 +534,19 @@ class MARLGridEnv:
         opt1 = self._wall_only_dist(self.s1)
         free_len2 = self._wall_only_dist(self.s2)
         max_man = 2 * (self.n - 1)
-        # Zorluk etiketi artik ENUMERATE ETMEDEN, basit bir mesafe esigiyle
-        # (PLAN §0.4'un ampirik bulgusu: zorluk d1 buyudukce artiyor). Kesin
-        # degil ama enumerate gerektirmez, curriculum agirliklandirmasi icin
-        # yeterli bir yaklasik deger.
-        is_hard = bool(max_man > 0 and opt1 / max_man >= 0.6)
+        # Zorluk etiketi (metriklerin zor/kolay ayrimi icin).
+        # ENGEL MODUNDA: olcut DOLAMBAC ORANI -- engellerin A1'i optimalden
+        # ne kadar saptirdigi (env/obstacles.py'nin uretecinin kendi "hard"
+        # tanimiyla AYNI esik: >= 1.5). Eski mesafe esigi (opt1/max_man>=0.6)
+        # burada ISE YARAMIYOR: olculdu, uretecin medium/hard haritalarinda
+        # baslangic-hedef Manhattan mesafesi kisa (ort. 31 ve 15), esigi
+        # HICBIR konfig asmiyor ve "zor alt-kume" bos kaliyordu (n=0, nan).
+        # ENGELSIZ MODDA: eski mesafe esigi (dolambac zaten hep 1.0 olurdu).
+        if self.walls:
+            man1 = manhattan(self.s1, self.goal)
+            is_hard = bool(man1 > 0 and opt1 / man1 >= 1.5)
+        else:
+            is_hard = bool(max_man > 0 and opt1 / max_man >= 0.6)
         return {
             "config": (self.s1, self.s2, self.goal),
             "success": bool(reached1 and reached2),
