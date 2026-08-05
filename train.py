@@ -942,7 +942,15 @@ if __name__ == "__main__":
                            obstacle_difficulty=args.difficulty, init_from=args.init_from,
                            resume=args.resume)
         if not args.no_demo:
-            record_demo_episodes(result["agents"], tag=tag, obstacle_difficulty=args.difficulty)
+            # EN IYI checkpoint'i diskten TAZE yukle -- result["agents"] egitimin
+            # BITTIGI anki canli nesne, "en iyi" ile ayni olmayabilir (bkz.
+            # train_iql'deki "EN IYI checkpoint" notu). Demo/gorsel her zaman
+            # KAYDEDILEN modeli yansitmali, egitimin nasil bittigini degil.
+            demo_agents = {AGENT_1: _make_iql_agent(args.seed),
+                          AGENT_2: _make_iql_agent(args.seed + 1)}
+            demo_agents[AGENT_1].load(f"{RUNS_DIR}/ckpt/{tag}_agent1.pt")
+            demo_agents[AGENT_2].load(f"{RUNS_DIR}/ckpt/{tag}_agent2.pt")
+            record_demo_episodes(demo_agents, tag=tag, obstacle_difficulty=args.difficulty)
             from viz.plot_iql_report import plot_demo_grids, plot_harm_curve
             os.makedirs(f"{RUNS_DIR}/viz", exist_ok=True)
             plot_harm_curve(tag, f"{RUNS_DIR}/viz/{tag}_harm_curve.png")
@@ -956,7 +964,10 @@ if __name__ == "__main__":
                            obstacle_difficulty=args.difficulty, init_from=args.init_from,
                            resume=args.resume)
         if not args.no_demo:
-            record_demo_episodes_vdn(result["agent"], tag=tag, obstacle_difficulty=args.difficulty)
+            # bkz. IQL dalindaki ayni not: EN IYI checkpoint diskten taze yuklenir.
+            demo_agent = VDNAgent(seed=args.seed)
+            demo_agent.load(f"{RUNS_DIR}/ckpt/{tag}.pt")
+            record_demo_episodes_vdn(demo_agent, tag=tag, obstacle_difficulty=args.difficulty)
             from viz.plot_iql_report import plot_demo_grids, plot_harm_curve
             os.makedirs(f"{RUNS_DIR}/viz", exist_ok=True)
             plot_harm_curve(tag, f"{RUNS_DIR}/viz/{tag}_harm_curve.png")
@@ -970,7 +981,13 @@ if __name__ == "__main__":
                             obstacle_difficulty=args.difficulty, init_from=args.init_from,
                             resume=args.resume)
         if not args.no_demo:
-            record_demo_episodes_qmix(result["agent"], tag=tag, obstacle_difficulty=args.difficulty)
+            # bkz. IQL dalindaki ayni not: EN IYI checkpoint diskten taze yuklenir.
+            # QMIX icin ozellikle kritik -- bu proje boyunca en az uc kez ortadan
+            # sonra COKEN algoritma bu (bkz. commit gecmisi): egitimin BITTIGI an
+            # neredeyse hic zirve degil.
+            demo_agent = QMixAgent(seed=args.seed)
+            demo_agent.load(f"{RUNS_DIR}/ckpt/{tag}.pt")
+            record_demo_episodes_qmix(demo_agent, tag=tag, obstacle_difficulty=args.difficulty)
             from viz.plot_iql_report import plot_demo_grids, plot_harm_curve
             os.makedirs(f"{RUNS_DIR}/viz", exist_ok=True)
             plot_harm_curve(tag, f"{RUNS_DIR}/viz/{tag}_harm_curve.png")
